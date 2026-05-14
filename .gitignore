@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+seai/
+venv/
+.venv/
+env/
+
+# Models (large checkpoint files)
+models/
+
+# Results (generated at runtime)
+results/logs/
+results/*.png
+results/*.json
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# LaTeX build artifacts
+presentation/*.aux
+presentation/*.log
+presentation/*.out
+presentation/*.toc
+presentation/*.snm
+presentation/*.nav
+presentation/*.fls
+presentation/*.fdb_latexmk
+presentation/*.synctex.gz
+presentation/*.bbl
+presentation/*.blg
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cowork session files
+CLAUDE.md

@@ -1,0 +1,30 @@
+environment:
+  name: "LunarLander-v3"
+  seed: 42
+  normalize_obs: true
+
+agent:
+  alpha: 0.0003            # ridotto da 0.0005 per più stabilità
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay: 0.9975    # più lento: arriva a 0.01 ~ep 1840 invece di 700
+  target_update_freq: 25   # meno frequente: più stabile (era 10)
+  batch_size: 64
+  buffer_capacity: 50000   # aumentato da 10k: ricorda più esperienze buone
+
+network:
+  hidden_layers: [256, 256]
+  activation: "relu"
+  dropout: 0.0
+
+training:
+  n_episodes: 2000
+  max_steps: 1000
+  seeds: [42, 123, 456, 789, 1234]
+  save_every: 200
+  log_every: 10
+
+evaluation:
+  n_eval_episodes: 20
+  render: false
