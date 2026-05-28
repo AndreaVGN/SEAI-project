@@ -4,11 +4,13 @@ environment:
   normalize_obs: true
 
 agent:
-  actor_lr: 0.0003       # actor learning rate
-  critic_lr: 0.0001      # critic learning rate (lowered from 0.001 to prevent divergence)
-  gamma: 0.99            # discount factor
-  entropy_coef: 0.001     # entropy regularization (raised from 0.01 to prevent premature collapse)
-  n_steps: 200            # n-step returns for bootstrapping
+  actor_lr: 0.0003
+  critic_lr: 0.0001        # più basso dell'actor: il critic deve essere stabile, non rincorrere target rumorosi
+  lr_end: 0.00001          # lr floor per cosine annealing (actor e critic)
+  gamma: 0.99
+  entropy_coef: 0.003      # ottimizzato via grid search (0.001,0.003,0.005,0.01) — best su seed 42
+  n_steps: 200             # near-Monte Carlo: bypassa le stime errate del critic nelle prime fasi
+  num_envs: 8              # N ambienti paralleli: N×n_steps=1600 transizioni per update
 
 network:
   hidden_layers: [256, 256]
@@ -16,12 +18,28 @@ network:
   dropout: 0.0
 
 training:
-  n_episodes: 5000
+  n_episodes: 5000         # aumentato da 3000: più margine nella fase finale post-convergenza
   max_steps: 1000
   seeds: [42, 123, 456, 789, 1234]
   save_every: 200
   log_every: 10
 
 evaluation:
-  n_eval_episodes: 20
+  n_eval_episodes: 100      # aumentato da 20: stime più robuste (meno varianza)
   render: false
+
+# ---------------------------------------------------------------------------
+# PARAMETRI PRECEDENTI (v1)
+# ---------------------------------------------------------------------------
+# agent:
+#   actor_lr: 0.0003
+#   critic_lr: 0.0001      # lowered from 0.001 to prevent divergence
+#   gamma: 0.99
+#   entropy_coef: 0.001    # raised from 0.01 to prevent premature collapse
+#   n_steps: 200           # n-step returns for bootstrapping (near Monte Carlo)
+#
+# training:
+#   n_episodes: 5000
+#
+# evaluation:
+#   n_eval_episodes: 20

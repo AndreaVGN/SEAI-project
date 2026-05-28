@@ -39,6 +39,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
 
 from src.networks.sarsa_network import SARSANetwork
 from src.utils.replay_buffer import ReplayBuffer
@@ -96,7 +97,13 @@ class DeepSARSAAgent:
         self.target_network = copy.deepcopy(self.q_network).to(device)
         self.target_network.eval()
 
+        self.alpha_end = agent_cfg.get("alpha_end", 1e-5)  # lr floor for cosine schedule
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.alpha)
+        # Cosine annealing: lr decays smoothly from alpha to alpha_end over n_episodes
+        _n_episodes = config.get("training", {}).get("n_episodes", 3000)
+        self.scheduler = lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=_n_episodes, eta_min=self.alpha_end
+        )
 
         # Replay buffer (short-horizon, semi-on-policy)
         self.replay_buffer = ReplayBuffer(capacity=agent_cfg.get("buffer_capacity", 50_000))
@@ -212,6 +219,8 @@ class DeepSARSAAgent:
 
         logger = TrainingLogger(log_dir, agent_name="sarsa", seed=self.seed)
         episode_rewards: List[float] = []
+        best_mean   = -float("inf")
+        best_path   = os.path.join(save_dir, f"sarsa_seed{self.seed}_best.pt")
 
         for ep in range(1, n_episodes + 1):
             state, _ = env.reset()
@@ -237,6 +246,8 @@ class DeepSARSAAgent:
                     break
 
             self.decay_epsilon()
+            if ep_loss:  # step scheduler only after at least one optimizer step
+                self.scheduler.step()
             if ep % self.target_update_freq == 0:
                 self.sync_target_network()
 
@@ -251,10 +262,20 @@ class DeepSARSAAgent:
                     "epsilon": round(self.epsilon, 4),
                     "mean_loss": float(np.mean(ep_loss)) if ep_loss else 0.0,
                     "buffer_size": len(self.replay_buffer),
+                    "lr": round(self.optimizer.param_groups[0]["lr"], 6),
                 }, verbose=verbose and (ep % 100 == 0))
 
             if ep % save_every == 0:
                 self.save(os.path.join(save_dir, f"sarsa_seed{self.seed}_ep{ep}.pt"), env=env)
+
+            # ── Best checkpoint ───────────────────────────────────────────
+            if len(episode_rewards) >= 100:
+                current_mean = float(np.mean(episode_rewards[-100:]))
+                if current_mean > best_mean:
+                    best_mean = current_mean
+                    self.save(best_path, env=env)
+                    if verbose:
+                        print(f"  [best] ep={ep}  mean100={best_mean:.2f}  → saved")
 
         logger.close()
         env.close()
@@ -290,6 +311,7 @@ class DeepSARSAAgent:
             env._normalizer.mean  = self._norm_mean.copy()
             env._normalizer.var   = self._norm_var.copy()
             env._normalizer.count = self._norm_count
+            env.freeze_normalizer()   # lock stats — prevent drift during evaluation
         elif normalize and warmup_episodes > 0:
             # Warm up normalizer for warmup_episodes to approximate training stats
             for _ in range(warmup_episodes):
@@ -299,6 +321,7 @@ class DeepSARSAAgent:
                     a = self.select_action(s, greedy=True)
                     s, _, term, trunc, _ = env.step(a)
                     done = term or trunc
+            env.freeze_normalizer()   # lock warmed-up stats for the actual eval episodes
         rewards = []
         inf_times = []
         for _ in range(n_episodes):

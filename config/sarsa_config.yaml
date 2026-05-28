@@ -4,14 +4,15 @@ environment:
   normalize_obs: true
 
 agent:
-  alpha: 0.0003            # ridotto da 0.0005 per più stabilità
+  alpha: 0.0005            # lr iniziale: convergenza rapida nelle prime fasi
+  alpha_end: 0.00005       # lr finale (cosine annealing): stabilizza la policy a fine training
   gamma: 0.99
   epsilon_start: 1.0
   epsilon_end: 0.01
-  epsilon_decay: 0.9975    # più lento: arriva a 0.01 ~ep 1840 invece di 700
-  target_update_freq: 25   # meno frequente: più stabile (era 10)
-  batch_size: 64
-  buffer_capacity: 50000   # aumentato da 10k: ricorda più esperienze buone
+  epsilon_decay: 0.995     # più veloce: arriva a 0.01 ~ep 920, lascia metà training all'exploitation
+  target_update_freq: 25
+  batch_size: 128          # aumentato da 64: stime di gradiente più robuste
+  buffer_capacity: 50000
 
 network:
   hidden_layers: [256, 256]
@@ -19,12 +20,32 @@ network:
   dropout: 0.0
 
 training:
-  n_episodes: 2000
+  n_episodes: 3000         # aumentato da 2000: più tempo dopo convergenza dell'epsilon
   max_steps: 1000
   seeds: [42, 123, 456, 789, 1234]
   save_every: 200
   log_every: 10
 
 evaluation:
-  n_eval_episodes: 20
+  n_eval_episodes: 100      # aumentato da 20: stime più robuste (meno varianza)
   render: false
+
+# ---------------------------------------------------------------------------
+# PARAMETRI PRECEDENTI (v1)
+# ---------------------------------------------------------------------------
+# agent:
+#   alpha: 0.0003
+#   # (nessun lr scheduling)            # ridotto da 0.0005 per più stabilità
+#   gamma: 0.99
+#   epsilon_start: 1.0
+#   epsilon_end: 0.01
+#   epsilon_decay: 0.9975    # più lento: arriva a 0.01 ~ep 1840 invece di 700
+#   target_update_freq: 25
+#   batch_size: 64
+#   buffer_capacity: 50000
+#
+# training:
+#   n_episodes: 2000
+#
+# evaluation:
+#   n_eval_episodes: 20

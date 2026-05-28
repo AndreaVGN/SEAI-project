@@ -50,6 +50,11 @@ def compute_statistics(
         s = pd.Series(r).rolling(window, min_periods=1).mean().values
         smoothed.append(s)
 
+    # Seeds may have different lengths (e.g. A2C vectorised training).
+    # Truncate all to the shortest seed so the matrix is homogeneous.
+    min_len = min(len(s) for s in smoothed)
+    smoothed = [s[:min_len] for s in smoothed]
+
     mat = np.array(smoothed)          # (n_seeds, n_episodes)
     mean = mat.mean(axis=0)
     std  = mat.std(axis=0, ddof=1) if mat.shape[0] > 1 else np.zeros_like(mean)

@@ -31,8 +31,11 @@ class RunningNormalizer:
         self.var  = np.ones(shape,  dtype=np.float64)
         self.count = 1e-8
         self.clip = clip
+        self.frozen = False   # when True, update() is a no-op (use during evaluation)
 
     def update(self, x: np.ndarray):
+        if self.frozen:
+            return
         self.count += 1
         delta  = x - self.mean
         self.mean += delta / self.count
@@ -95,6 +98,14 @@ class LunarLanderWrapper(gym.Wrapper):
             obs = self._normalizer.normalize(obs)
         return obs.astype(np.float32), float(reward), terminated, truncated, info
 
+    def freeze_normalizer(self):
+        """Freeze running stats so evaluation doesn't drift from training distribution."""
+        self._normalizer.frozen = True
+
+    def unfreeze_normalizer(self):
+        """Re-enable running stat updates (e.g. for continued training)."""
+        self._normalizer.frozen = False
+
     # Expose raw normaliser so agents can persist it
     @property
     def normalizer(self):
@@ -114,3 +125,66 @@ def make_env(
         variant=variant,
         seed=seed,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vectorised environment support (for A2C with N parallel envs)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class VecRunningNormalizer:
+    """
+    Shared online normaliser for N parallel environments.
+    Each step receives a batch of N observations; the running stats
+    are updated with all N observations before normalising.
+    """
+
+    def __init__(self, shape: tuple, clip: float = 5.0):
+        self._norm = RunningNormalizer(shape, clip)
+
+    def update_and_normalize(self, obs_batch: np.ndarray) -> np.ndarray:
+        """Update stats with all N obs, then normalise. Returns (N, obs_dim) float32."""
+        for obs in obs_batch:
+            self._norm.update(obs)
+        return np.stack([self._norm.normalize(obs) for obs in obs_batch]).astype(np.float32)
+
+    def normalize(self, obs_batch: np.ndarray) -> np.ndarray:
+        """Normalise without updating stats (use during evaluation)."""
+        return np.stack([self._norm.normalize(obs) for obs in obs_batch]).astype(np.float32)
+
+    def freeze(self):
+        self._norm.frozen = True
+
+    def unfreeze(self):
+        self._norm.frozen = False
+
+    # Expose raw stats so agents can persist/restore them
+    @property
+    def mean(self):  return self._norm.mean.copy()
+    @property
+    def var(self):   return self._norm.var.copy()
+    @property
+    def count(self): return self._norm.count
+
+
+def make_vec_env(
+    env_name:  str = "LunarLander-v3",
+    num_envs:  int = 8,
+    seed:      int = 42,
+    variant:   str = "standard",
+) -> gym.vector.SyncVectorEnv:
+    """
+    Create num_envs parallel LunarLander environments (synchronous).
+    Each env gets a different seed offset so initial conditions vary.
+    Returns a raw gym.vector.SyncVectorEnv — normalisation is handled
+    separately by VecRunningNormalizer kept on the agent.
+    """
+    kwargs = ENV_VARIANTS.get(variant, {})
+
+    def _make(seed_i: int):
+        def _init():
+            env = gym.make(env_name, **kwargs)
+            env.action_space.seed(seed_i)
+            return env
+        return _init
+
+    return gym.vector.SyncVectorEnv([_make(seed + i) for i in range(num_envs)])
