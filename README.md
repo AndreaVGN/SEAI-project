@@ -61,7 +61,7 @@ pip install -r requirements.txt
 ### Training
 
 ```bash
-# Train both agents — all 5 seeds (CPU recommended, ~1-2h):
+# Train both agents — all 5 seeds:
 python train.py --device cpu
 
 # Train a single agent:
