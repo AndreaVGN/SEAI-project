@@ -49,3 +49,28 @@ evaluation:
 #
 # evaluation:
 #   n_eval_episodes: 20
+
+# ---------------------------------------------------------------------------
+# ABLATION STUDIES
+# ---------------------------------------------------------------------------
+# Modificare questi flag per le ablation — il codice baseline rimane invariato.
+
+ablation:
+  use_replay_buffer: true    # false → online TD senza buffer (_train_online_single)
+  use_parallel_envs: false   # true  → N env paralleli senza buffer (_train_parallel_online)
+  num_envs: 8                # num env paralleli (usato solo se use_parallel_envs: true)
+
+# Reward shaping — pesi di penalità aggiuntivi sullo stato osservabile.
+# Tutti i valori sono coefficienti positivi (0.0 = disabilitato).
+# Il reward finale è: r_env + shaping(obs, action)
+reward_coefficients:
+  enabled: false
+  # Default values reproduce gymnasium exactly — change only what you want to ablate.
+  pos_coef: 100.0            # peso distanza dal pad (default 100)
+  vel_coef: 100.0            # peso velocità totale  (default 100)
+  angle_coef: 100.0          # peso inclinazione     (default 100)
+  leg_reward: 10.0           # bonus contatto gamba  (default  10)
+  main_engine_coef: 0.30     # penalità motore princ.(default 0.30)
+  side_engine_coef: 0.03     # penalità motori later.(default 0.03)
+  crash_penalty: 100.0       # penalità crash        (default 100)
+  land_bonus: 100.0          # bonus atterraggio     (default 100)

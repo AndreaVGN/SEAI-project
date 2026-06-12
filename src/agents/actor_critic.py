@@ -107,6 +107,13 @@ class ActorCriticAgent:
         self._episode = 0
         self._inference_times: List[float] = []
 
+        # Reward coefficient overrides for CustomLunarLander (None = use gymnasium defaults)
+        coef_cfg = config.get("reward_coefficients", {})
+        if coef_cfg.get("enabled", False):
+            self.reward_coefs = {k: v for k, v in coef_cfg.items() if k != "enabled"}
+        else:
+            self.reward_coefs = None
+
         torch.manual_seed(seed)
         np.random.seed(seed)
 
@@ -389,9 +396,21 @@ class ActorCriticAgent:
             )
 
         # ── Single-environment path (original) ────────────────────────
-        env = make_env(env_name=env_name, normalize=normalize, seed=self.seed)
+        env = make_env(env_name=env_name, normalize=normalize, seed=self.seed, reward_coefs=self.reward_coefs)
 
-        logger = TrainingLogger(log_dir, agent_name="ac", seed=self.seed)
+        run_name    = f"ac_seed{self.seed}"
+        run_log_dir = os.path.join(log_dir, run_name)
+        logger = TrainingLogger(
+            run_log_dir, agent_name="ac", seed=self.seed,
+            run_info={
+                "run_name":   run_name,
+                "agent":      "ac",
+                "n_steps":    self.n_steps,
+                "num_envs":   self.num_envs,
+                "config":     self.config,
+                "start_time": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
         episode_rewards: List[float] = []
         best_mean = -float("inf")
         best_path = os.path.join(save_dir, f"ac_seed{self.seed}_best.pt")
@@ -484,7 +503,19 @@ class ActorCriticAgent:
             shape=(vec_env.single_observation_space.shape[0],)
         ) if normalize else None
 
-        logger = TrainingLogger(log_dir, agent_name="ac", seed=self.seed)
+        run_name    = f"ac_e{N}s{self.n_steps}_seed{self.seed}"
+        run_log_dir = os.path.join(log_dir, run_name)
+        logger = TrainingLogger(
+            run_log_dir, agent_name="ac", seed=self.seed,
+            run_info={
+                "run_name":   run_name,
+                "agent":      "ac",
+                "n_steps":    self.n_steps,
+                "num_envs":   N,
+                "config":     self.config,
+                "start_time": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
         episode_rewards: List[float] = []
 
         # Per-env running reward accumulators
@@ -592,10 +623,11 @@ class ActorCriticAgent:
         env_cfg = self.config.get("environment", {})
         normalize = env_cfg.get("normalize_obs", True)
         env = make_env(
-            env_name  = env_cfg.get("name", "LunarLander-v3"),
-            normalize = normalize,
-            variant   = env_variant,
-            seed      = seed,
+            env_name       = env_cfg.get("name", "LunarLander-v3"),
+            normalize      = normalize,
+            variant        = env_variant,
+            seed           = seed,
+            reward_weights = self.reward_weights,
         )
         # Restore normalizer state if available
         if normalize and hasattr(self, "_norm_mean") and self._norm_mean is not None:

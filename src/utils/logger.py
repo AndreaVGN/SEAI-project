@@ -31,6 +31,7 @@ class TrainingLogger:
         agent_name: str = "agent",
         use_tensorboard: bool = False,
         seed: int = 0,
+        run_info=None,
     ):
         self.log_dir    = Path(log_dir)
         self.agent_name = agent_name
@@ -40,6 +41,8 @@ class TrainingLogger:
         csv_path = self.log_dir / f"{agent_name}_seed{seed}.csv"
         self._csv_file = open(csv_path, "w", newline="")
         self._writer   = None          # lazy init on first log
+        self._run_info = run_info or {}
+        self._last_metrics: dict = {}
 
         self._tb_writer = None
         if use_tensorboard:
@@ -74,6 +77,9 @@ class TrainingLogger:
                 if isinstance(v, (int, float)):
                     self._tb_writer.add_scalar(k, v, episode)
 
+        self._last_metrics = dict(metrics)
+        self._last_episode = episode
+
         if verbose:
             parts = [f"Ep {episode:5d}"] + [
                 f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
@@ -82,6 +88,19 @@ class TrainingLogger:
             print(" | ".join(parts))
 
     def close(self) -> None:
+        import json
         self._csv_file.close()
         if self._tb_writer is not None:
             self._tb_writer.close()
+        # Write run summary so each run folder has proof of completion
+        summary = {
+            "agent":         self.agent_name,
+            "seed":          self.seed,
+            "end_time":      time.strftime("%Y-%m-%d %H:%M:%S"),
+            "elapsed_s":     round(time.time() - self._start_time, 1),
+            "last_episode":  getattr(self, "_last_episode", None),
+            "final_metrics": self._last_metrics,
+            **self._run_info,
+        }
+        with open(self.log_dir / "run_info.json", "w") as f:
+            json.dump(summary, f, indent=2)

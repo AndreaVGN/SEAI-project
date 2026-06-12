@@ -43,3 +43,20 @@ evaluation:
 #
 # evaluation:
 #   n_eval_episodes: 20
+
+# ---------------------------------------------------------------------------
+# ABLATION STUDIES
+# ---------------------------------------------------------------------------
+# n_steps e num_envs sono già qui sopra — modificarli direttamente o
+# sovrascriverli via CLI (--n_steps, --num_envs) per le ablation.
+
+reward_coefficients:
+  enabled: false
+  pos_coef: 100.0
+  vel_coef: 100.0
+  angle_coef: 100.0
+  leg_reward: 10.0
+  main_engine_coef: 0.30
+  side_engine_coef: 0.03
+  crash_penalty: 100.0
+  land_bonus: 100.0

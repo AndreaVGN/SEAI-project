@@ -14,6 +14,12 @@ import numpy as np
 from gymnasium import spaces
 
 
+
+
+# Lazy import to avoid circular deps — only used when reward_coefs is set
+_CUSTOM_ENV_CLS = None
+
+
 # Pre-defined variants used for generalisation testing (SRPs 4/4 requirement)
 ENV_VARIANTS = {
     "standard": dict(enable_wind=False),
@@ -62,17 +68,27 @@ class LunarLanderWrapper(gym.Wrapper):
         normalize: bool = True,
         variant: str = "standard",
         seed: int = 42,
+        render_mode = None,
+        reward_coefs = None,
         **variant_kwargs,
     ):
         # Build the env with the chosen variant parameters
         kwargs = ENV_VARIANTS.get(variant, {})
         kwargs.update(variant_kwargs)
-        base_env = gym.make(env_name, **kwargs)
+        if render_mode is not None:
+            kwargs["render_mode"] = render_mode
+        if reward_coefs:
+            from src.environment.custom_reward import CustomLunarLander
+            import gymnasium as _gym
+            base_env = CustomLunarLander(reward_coefs=reward_coefs, **kwargs)
+            base_env = _gym.wrappers.TimeLimit(base_env, max_episode_steps=1000)
+        else:
+            base_env = gym.make(env_name, **kwargs)
         super().__init__(base_env)
 
-        self.normalize = normalize
-        self.seed_val  = seed
-        self.variant   = variant
+        self.normalize      = normalize
+        self.seed_val       = seed
+        self.variant        = variant
 
         obs_shape = self.observation_space.shape
         self._normalizer = RunningNormalizer(obs_shape)
@@ -117,13 +133,26 @@ def make_env(
     normalize: bool = True,
     variant: str = "standard",
     seed: int = 42,
+    render_mode=None,
+    reward_coefs=None,
 ) -> LunarLanderWrapper:
-    """Factory function — preferred entry point for creating environments."""
+    """
+    Factory function — preferred entry point for creating environments.
+
+    reward_coefs : dict | None
+        If provided, creates a CustomLunarLander with the given coefficient
+        overrides instead of the standard gym.make() env.
+        Keys: pos_coef, vel_coef, angle_coef, leg_reward,
+              main_engine_coef, side_engine_coef, crash_penalty, land_bonus.
+        Unspecified keys keep the gymnasium defaults (100/100/100/10/0.30/0.03/100/100).
+    """
     return LunarLanderWrapper(
         env_name=env_name,
         normalize=normalize,
         variant=variant,
         seed=seed,
+        render_mode=render_mode,
+        reward_coefs=reward_coefs,
     )
 
 

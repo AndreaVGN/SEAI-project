@@ -127,3 +127,145 @@ Both agents use **cosine annealing** learning-rate scheduling and **best-checkpo
 - Actor-Critic base: [nikhilbarhate99/Actor-Critic-PyTorch](https://github.com/nikhilbarhate99/Actor-Critic-PyTorch)
 
 Both were significantly extended with: unified training framework, custom environment wrapper with observation normalisation, vectorised environments (A2C), cosine annealing LR scheduling, grid search CLI, best-checkpoint auto-saving, multi-seed aggregate evaluation, and statistical analysis.
+
+---
+
+## Ablation Studies
+
+All ablations use the same CLI as standard training — pass flags to override config values.  
+Checkpoints are saved with the `--tag` prefix so they never overwrite the baseline.
+
+### 1 · Deep SARSA — con e senza Replay Buffer
+
+**Baseline (con buffer)** — comportamento di default, nessun flag necessario:
+```bash
+python train.py --agent sarsa --seeds 42 --episodes 3000 --device cpu
+```
+
+**Senza replay buffer** (online TD, correlazione massima tra osservazioni):
+```bash
+python train.py --agent sarsa --seeds 42 --episodes 3000 \
+    --no_replay_buffer --tag noreplay_
+```
+
+Confronta le learning curve nei log in `results/logs/` per vedere l'impatto
+della decorrelazione tramite buffer.
+
+---
+
+### 2 · Deep SARSA — Ambienti Paralleli senza Replay Buffer
+
+Decorrelazione via diversità degli ambienti invece del buffer.  
+`--parallel_envs N` implica automaticamente `--no_replay_buffer`.
+
+```bash
+# 4 ambienti paralleli
+python train.py --agent sarsa --seeds 42 --episodes 3000 \
+    --parallel_envs 4 --tag parallel4_
+
+# 8 ambienti paralleli
+python train.py --agent sarsa --seeds 42 --episodes 3000 \
+    --parallel_envs 8 --tag parallel8_
+```
+
+Confronto a tre vie: baseline (buffer) · no buffer (1 env) · no buffer (N env).
+
+---
+
+### 3 · A2C — Sweep di n\_steps
+
+`n_steps` controlla il trade-off bias–varianza del return:
+- valori piccoli → TD puro (alto bias, bassa varianza)
+- valori grandi → near-Monte Carlo (basso bias, alta varianza)
+
+```bash
+# n_steps = 5 (TD breve)
+python train.py --agent ac --seeds 42 --n_steps 5 --tag nstep5_
+
+# n_steps = 20
+python train.py --agent ac --seeds 42 --n_steps 20 --tag nstep20_
+
+# n_steps = 50
+python train.py --agent ac --seeds 42 --n_steps 50 --tag nstep50_
+
+# n_steps = 200 (baseline)
+python train.py --agent ac --seeds 42
+```
+
+---
+
+### 4 · A2C — Sweep di num\_envs (a n\_steps fisso)
+
+Fissa `n_steps` piccolo e varia il numero di ambienti paralleli per vedere
+se la diversità compensa la finestra corta.
+
+```bash
+# 1 env, n_steps 20
+python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 1 --tag e1s20_
+
+# 4 env, n_steps 20
+python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 4 --tag e4s20_
+
+# 8 env, n_steps 20  (stesse transizioni totali del baseline e8s200 ma orizz. più corto)
+python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 8 --tag e8s20_
+
+# 16 env, n_steps 20
+python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 16 --tag e16s20_
+```
+
+---
+
+### 5 · Reward Shaping (entrambi gli agenti)
+
+Aggiunge penalità configurabili sopra al reward originale dell'ambiente.  
+I coefficienti positivi producono penalità (reward sottratto).
+
+Componenti disponibili:
+
+| Chiave | Formula | Significato |
+|--------|---------|-------------|
+| `angle_penalty` | `−c·\|obs[4]\|` | penalizza l'inclinazione |
+| `angular_vel_penalty` | `−c·\|obs[5]\|` | penalizza la rotazione |
+| `vel_penalty` | `−c·√(vx²+vy²)` | penalizza la velocità totale |
+| `x_penalty` | `−c·\|obs[0]\|` | penalizza l'offset orizzontale dal pad |
+| `fuel_penalty_main` | `−c` se `action==2` | penalizza il motore principale |
+| `fuel_penalty_side` | `−c` se `action∈{1,3}` | penalizza i motori laterali |
+
+**Esempi:**
+
+```bash
+# SARSA — penalizza inclinazione e rotazione
+python train.py --agent sarsa --seeds 42 \
+    --reward_shaping angle_penalty=0.5 angular_vel_penalty=0.1 \
+    --tag shape_angle_
+
+# A2C — penalizza consumo carburante
+python train.py --agent ac --seeds 42 \
+    --reward_shaping fuel_penalty_main=0.3 fuel_penalty_side=0.1 \
+    --tag shape_fuel_
+
+# A2C — shaping aggressivo su velocità
+python train.py --agent ac --seeds 42 \
+    --reward_shaping vel_penalty=0.5 angle_penalty=0.3 \
+    --tag shape_vel_
+```
+
+In alternativa, modifica direttamente la sezione `reward_shaping:` nei file
+`config/sarsa_config.yaml` o `config/actor_critic_config.yaml` e imposta
+`enabled: true`.
+
+---
+
+### Riepilogo flag CLI per ablation
+
+| Flag | Agente | Descrizione |
+|------|--------|-------------|
+| `--no_replay_buffer` | SARSA | Disabilita il replay buffer |
+| `--parallel_envs N` | SARSA | N ambienti paralleli, nessun buffer |
+| `--n_steps N` | A2C | Override di `n_step_horizon` |
+| `--num_envs N` | A2C | Override di `num_envs` |
+| `--reward_shaping K=V ...` | entrambi | Pesi di reward shaping |
+| `--tag PREFIX` | entrambi | Prefisso per i checkpoint (evita sovrascritture) |
+
+I checkpoint ablation vengono salvati come `models/{tag}sarsa_seed{seed}_best.pt`.  
+Per valutare un checkpoint ablation usa `evaluate.py --sarsa_ckpt models/{tag}...`.

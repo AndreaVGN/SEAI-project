@@ -65,6 +65,43 @@ def make_agent(agent_type: str, config: dict, device: torch.device, seed: int):
     return ActorCriticAgent(state_dim, action_dim, config, device, seed=seed)
 
 
+def apply_cli_overrides(sarsa_cfg: dict, ac_cfg: dict, args) -> tuple:
+    """Apply CLI ablation overrides on top of YAML configs."""
+    import copy
+    sarsa = copy.deepcopy(sarsa_cfg)
+    ac    = copy.deepcopy(ac_cfg)
+
+    # A2C sweeps
+    if args.n_steps is not None:
+        ac["agent"]["n_steps"] = args.n_steps
+    if args.num_envs is not None:
+        ac["agent"]["num_envs"] = args.num_envs
+
+    # SARSA ablations
+    if args.no_replay_buffer:
+        sarsa.setdefault("ablation", {})["use_replay_buffer"] = False
+    if args.parallel_envs is not None:
+        sarsa.setdefault("ablation", {})["use_replay_buffer"] = False
+        sarsa.setdefault("ablation", {})["use_parallel_envs"] = True
+        sarsa.setdefault("ablation", {})["num_envs"]          = args.parallel_envs
+
+    # Reward coefficient overrides (format: KEY=VALUE)
+    if args.reward_coef:
+        import ast
+        for kv in args.reward_coef:
+            k, _, v = kv.partition("=")
+            try:
+                val = ast.literal_eval(v)
+            except Exception:
+                val = float(v)
+            sarsa.setdefault("reward_coefficients", {})["enabled"] = True
+            sarsa["reward_coefficients"][k.strip()]                = val
+            ac.setdefault("reward_coefficients", {})["enabled"]    = True
+            ac["reward_coefficients"][k.strip()]                   = val
+
+    return sarsa, ac
+
+
 def parse_grid(grid_args: list[str]) -> dict[str, list]:
     """
     Parse grid search CLI args.
@@ -104,15 +141,18 @@ def train_agent(
     log_dir: str = "results/logs",
     save_dir: str = "models",
     verbose: bool = True,
+    tag: str = "",
 ) -> list[list[float]]:
     all_rewards = []
     for seed in seeds:
         print(f"\n{'='*60}")
-        print(f"  Training {agent_type.upper()} | seed={seed}")
+        print(f"  Training {agent_type.upper()} | seed={seed}"
+              + (f" | tag={tag}" if tag else ""))
         print(f"{'='*60}")
         agent = make_agent(agent_type, config, device, seed)
         t0 = time.time()
-        rewards = agent.train(log_dir=log_dir, save_dir=save_dir, verbose=verbose)
+        rewards = agent.train(log_dir=log_dir, save_dir=save_dir, verbose=verbose,
+                              **({} if agent_type == "ac" else {"tag": tag}))
         elapsed = time.time() - t0
         print(f"\n  Done in {elapsed:.1f}s | "
               f"Final mean (last 100 ep): {np.mean(rewards[-100:]):.2f}")
@@ -227,6 +267,21 @@ def main():
     parser.add_argument("--device",   default="auto")
     parser.add_argument("--grid",     nargs="+", default=None, metavar="PARAM=V1,V2",
                         help="Grid search over agent params, e.g. --grid alpha=0.0003,0.0005 epsilon_decay=0.995,0.997")
+
+    # ── Ablation flags ────────────────────────────────────────────────────────
+    parser.add_argument("--no_replay_buffer", action="store_true",
+                        help="[SARSA ablation] Disable experience replay (online TD)")
+    parser.add_argument("--parallel_envs", type=int, default=None, metavar="N",
+                        help="[SARSA ablation] Use N parallel envs without replay buffer")
+    parser.add_argument("--n_steps", type=int, default=None,
+                        help="[A2C ablation] Override n_step_horizon in config")
+    parser.add_argument("--num_envs", type=int, default=None,
+                        help="[A2C ablation] Override num_envs in config")
+    parser.add_argument("--reward_coef", nargs="+", default=None,
+                        metavar="KEY=VALUE",
+                        help="Override reward coefficients, e.g. --reward_coef angle_coef=200 vel_coef=50")
+    parser.add_argument("--tag", type=str, default="",
+                        help="Prefix for checkpoint filenames (e.g. 'ablation_noreplay_')")
     args = parser.parse_args()
 
     # ── Device ────────────────────────────────────────────────────────────────
@@ -252,6 +307,10 @@ def main():
     seeds_sarsa = args.seeds or sarsa_cfg["training"]["seeds"]
     seeds_ac    = args.seeds or ac_cfg["training"]["seeds"]
 
+    # Apply ablation CLI overrides
+    sarsa_cfg, ac_cfg = apply_cli_overrides(sarsa_cfg, ac_cfg, args)
+    tag = args.tag if args.tag.endswith("_") or not args.tag else args.tag + "_"
+
     os.makedirs("results/logs",      exist_ok=True)
     os.makedirs("results/logs/grid", exist_ok=True)
     os.makedirs("models",            exist_ok=True)
@@ -269,10 +328,10 @@ def main():
 
     # ── Standard training mode ────────────────────────────────────────────────
     if args.agent in ("sarsa", "both"):
-        train_agent("sarsa", sarsa_cfg, seeds_sarsa, device)
+        train_agent("sarsa", sarsa_cfg, seeds_sarsa, device, tag=tag)
 
     if args.agent in ("ac", "both"):
-        train_agent("ac", ac_cfg, seeds_ac, device)
+        train_agent("ac", ac_cfg, seeds_ac, device, tag=tag)
 
     print("\n[train.py] All training runs complete.")
     print("Run python compare.py to generate comparison plots and statistics.")

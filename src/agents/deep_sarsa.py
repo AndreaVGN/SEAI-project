@@ -44,7 +44,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 from src.networks.sarsa_network import SARSANetwork
 from src.utils.replay_buffer import ReplayBuffer
 from src.utils.logger import TrainingLogger
-from src.environment.lunar_lander_wrapper import make_env
+from src.environment.lunar_lander_wrapper import make_env, make_vec_env, VecRunningNormalizer
 
 
 class DeepSARSAAgent:
@@ -105,12 +105,28 @@ class DeepSARSAAgent:
             self.optimizer, T_max=_n_episodes, eta_min=self.alpha_end
         )
 
-        # Replay buffer (short-horizon, semi-on-policy)
-        self.replay_buffer = ReplayBuffer(capacity=agent_cfg.get("buffer_capacity", 50_000))
+
+        # Ablation flags
+        ablation_cfg           = config.get("ablation", {})
+        self.use_replay_buffer = ablation_cfg.get("use_replay_buffer", True)
+        self.use_parallel_envs = ablation_cfg.get("use_parallel_envs", False)
+        self.num_envs_parallel = ablation_cfg.get("num_envs", 8)
+
+        # Replay buffer — only instantiated when enabled
+        if self.use_replay_buffer:
+            self.replay_buffer = ReplayBuffer(capacity=agent_cfg.get("buffer_capacity", 50_000))
+
+        # Reward coefficient overrides for CustomLunarLander (None = use gymnasium defaults)
+        coef_cfg = config.get("reward_coefficients", {})
+        if coef_cfg.get("enabled", False):
+            self.reward_coefs = {k: v for k, v in coef_cfg.items() if k != "enabled"}
+        else:
+            self.reward_coefs = None
 
         # Tracking
         self._episode = 0
         self._inference_times: List[float] = []
+        self._vec_normalizer = None
 
         # RNG
         torch.manual_seed(seed)
@@ -181,6 +197,24 @@ class DeepSARSAAgent:
 
         return loss.item()
 
+    def update_online(self, state, action, reward, next_state, next_action, done):
+        """Single-transition SARSA update — no replay buffer."""
+        state_t      = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        next_state_t = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
+        q_sa = self.q_network(state_t)[0, action]
+        with torch.no_grad():
+            q_next   = self.target_network(next_state_t)[0, next_action]
+            target_t = torch.tensor(
+                reward + self.gamma * q_next.item() * (1.0 - float(done)),
+                dtype=torch.float32, device=self.device
+            )
+        loss = nn.MSELoss()(q_sa, target_t)
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=10.0)
+        self.optimizer.step()
+        return loss.item()
+
     def decay_epsilon(self) -> None:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
@@ -196,31 +230,60 @@ class DeepSARSAAgent:
         log_dir:  str = "results/logs",
         save_dir: str = "models",
         verbose:  bool = True,
+        tag:      str = "",
     ) -> List[float]:
         """
-        Full training loop for one seed.
+        Full training loop for one seed.  Branches on ablation flags:
+          use_replay_buffer=True  (default): standard buffered SARSA
+          use_replay_buffer=False           : online single-step TD
+          use_parallel_envs=True            : N parallel envs, online TD
 
         Returns
         -------
         episode_rewards : list of undiscounted returns per episode
         """
-        train_cfg = self.config.get("training", {})
-        n_episodes  = train_cfg.get("n_episodes", 2000)
-        max_steps   = train_cfg.get("max_steps", 1000)
-        save_every  = train_cfg.get("save_every", 200)
-        log_every   = train_cfg.get("log_every", 10)
+        train_cfg  = self.config.get("training", {})
+        n_episodes = train_cfg.get("n_episodes", 2000)
+        max_steps  = train_cfg.get("max_steps", 1000)
+        save_every = train_cfg.get("save_every", 200)
+        log_every  = train_cfg.get("log_every", 10)
+        env_cfg    = self.config.get("environment", {})
+        env_name   = env_cfg.get("name", "LunarLander-v3")
+        normalize  = env_cfg.get("normalize_obs", True)
 
-        env_cfg  = self.config.get("environment", {})
+        # Ablation routing
+        if self.use_parallel_envs and not self.use_replay_buffer:
+            return self._train_parallel_online(
+                env_name, normalize, n_episodes, max_steps,
+                save_every, log_every, log_dir, save_dir, verbose, tag)
+        if not self.use_replay_buffer:
+            return self._train_online_single(
+                env_name, normalize, n_episodes, max_steps,
+                save_every, log_every, log_dir, save_dir, verbose, tag)
+
+        # Standard (buffered) path
         env = make_env(
-            env_name  = env_cfg.get("name", "LunarLander-v3"),
-            normalize = env_cfg.get("normalize_obs", True),
-            seed      = self.seed,
+            env_name       = env_name,
+            normalize      = normalize,
+            seed           = self.seed,
+            reward_weights = self.reward_weights,
         )
 
-        logger = TrainingLogger(log_dir, agent_name="sarsa", seed=self.seed)
+        run_name    = f"{tag}sarsa_seed{self.seed}"
+        run_log_dir = os.path.join(log_dir, run_name)
+        logger = TrainingLogger(
+            run_log_dir, agent_name="sarsa", seed=self.seed,
+            run_info={
+                "run_name":   run_name,
+                "agent":      "sarsa",
+                "variant":    "buffered",
+                "config":     self.config,
+                "start_time": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
         episode_rewards: List[float] = []
         best_mean   = -float("inf")
-        best_path   = os.path.join(save_dir, f"sarsa_seed{self.seed}_best.pt")
+        best_path   = os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_best.pt")
 
         for ep in range(1, n_episodes + 1):
             state, _ = env.reset()
@@ -266,7 +329,7 @@ class DeepSARSAAgent:
                 }, verbose=verbose and (ep % 100 == 0))
 
             if ep % save_every == 0:
-                self.save(os.path.join(save_dir, f"sarsa_seed{self.seed}_ep{ep}.pt"), env=env)
+                self.save(os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_ep{ep}.pt"), env=env)
 
             # ── Best checkpoint ───────────────────────────────────────────
             if len(episode_rewards) >= 100:
@@ -279,6 +342,168 @@ class DeepSARSAAgent:
 
         logger.close()
         env.close()
+        return episode_rewards
+
+    # ------------------------------------------------------------------
+    # Ablation training paths
+    # ------------------------------------------------------------------
+
+    def _train_online_single(self, env_name, normalize, n_episodes, max_steps,
+                              save_every, log_every, log_dir, save_dir, verbose, tag):
+        """Online TD (no buffer, single env).  Compare vs. standard to
+        isolate the effect of experience replay."""
+        env = make_env(env_name=env_name, normalize=normalize, seed=self.seed,
+                       reward_coefs=self.reward_coefs)
+        run_name    = f"{tag}sarsa_noreplay_seed{self.seed}"
+        run_log_dir = os.path.join(log_dir, run_name)
+        logger = TrainingLogger(
+            run_log_dir, agent_name="sarsa_noreplay", seed=self.seed,
+            run_info={
+                "run_name":   run_name,
+                "agent":      "sarsa",
+                "variant":    "no_replay_buffer",
+                "config":     self.config,
+                "start_time": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        episode_rewards: List[float] = []
+        best_mean = -float("inf")
+        best_path = os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_best.pt")
+
+        for ep in range(1, n_episodes + 1):
+            state, _ = env.reset()
+            action   = self.select_action(state)
+            ep_reward, ep_losses = 0.0, []
+
+            for _ in range(max_steps):
+                next_state, reward, terminated, truncated, _ = env.step(action)
+                done        = terminated or truncated
+                next_action = self.select_action(next_state)
+                ep_losses.append(self.update_online(state, action, reward,
+                                                     next_state, next_action, done))
+                state, action, ep_reward = next_state, next_action, ep_reward + reward
+                if done:
+                    break
+
+            self.decay_epsilon()
+            self.scheduler.step()
+            if ep % self.target_update_freq == 0:
+                self.sync_target_network()
+            episode_rewards.append(ep_reward)
+            self._episode = ep
+
+            if ep % log_every == 0:
+                last_n = episode_rewards[-log_every:]
+                logger.log(ep, {"episode_reward": ep_reward,
+                    "mean_reward_last_n": float(np.mean(last_n)),
+                    "epsilon": round(self.epsilon, 4),
+                    "mean_loss": float(np.mean(ep_losses)),
+                    "lr": round(self.optimizer.param_groups[0]["lr"], 6),
+                }, verbose=verbose and (ep % 100 == 0))
+            if ep % save_every == 0:
+                self.save(os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_ep{ep}.pt"), env=env)
+            if len(episode_rewards) >= 100:
+                cur = float(np.mean(episode_rewards[-100:]))
+                if cur > best_mean:
+                    best_mean = cur
+                    self.save(best_path, env=env)
+                    if verbose:
+                        print(f"  [best] ep={ep}  mean100={best_mean:.2f}  -> saved")
+
+        logger.close(); env.close()
+        return episode_rewards
+
+    def _train_parallel_online(self, env_name, normalize, n_episodes, max_steps,
+                                save_every, log_every, log_dir, save_dir, verbose, tag):
+        """
+        Parallel-env online SARSA (no buffer, N envs).
+        Decorrelation via environment diversity; epsilon shared, decays once
+        per completed episode across all envs.
+        """
+        N = self.num_envs_parallel
+        vec_env    = make_vec_env(env_name=env_name, num_envs=N, seed=self.seed)
+        normalizer = VecRunningNormalizer(shape=(self.state_dim,)) if normalize else None
+
+        run_name    = f"{tag}sarsa_parallel{N}_seed{self.seed}"
+        run_log_dir = os.path.join(log_dir, run_name)
+        logger = TrainingLogger(
+            run_log_dir, agent_name="sarsa_parallel", seed=self.seed,
+            run_info={
+                "run_name":   run_name,
+                "agent":      "sarsa",
+                "variant":    f"parallel_{N}envs",
+                "num_envs":   N,
+                "config":     self.config,
+                "start_time": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        episode_rewards: List[float] = []
+        ep_rewards_running = np.zeros(N, dtype=np.float32)
+        best_mean  = -float("inf")
+        best_path  = os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_best.pt")
+
+        obs_batch, _ = vec_env.reset()
+        states  = normalizer.update_and_normalize(obs_batch) if normalizer else obs_batch.astype(np.float32)
+        actions = np.array([self.select_action(s) for s in states], dtype=np.int64)
+
+        ep_count, step_count, ep_losses = 0, 0, []
+        log_trigger = log_every
+
+        while ep_count < n_episodes:
+            obs_batch, rewards, terminated, truncated, _ = vec_env.step(actions)
+            dones = terminated | truncated
+
+            next_states  = normalizer.update_and_normalize(obs_batch) if normalizer else obs_batch.astype(np.float32)
+            next_actions = np.array([self.select_action(s) for s in next_states], dtype=np.int64)
+
+            for i in range(N):
+                ep_losses.append(self.update_online(
+                    states[i], int(actions[i]), float(rewards[i]),
+                    next_states[i], int(next_actions[i]), bool(dones[i])))
+
+            ep_rewards_running += rewards
+            step_count += 1
+
+            for i in range(N):
+                if dones[i]:
+                    episode_rewards.append(float(ep_rewards_running[i]))
+                    ep_rewards_running[i] = 0.0
+                    ep_count += 1
+                    self._episode = ep_count
+                    self.decay_epsilon()
+                    self.scheduler.step()
+
+            if step_count % self.target_update_freq == 0:
+                self.sync_target_network()
+
+            if ep_count >= log_trigger and len(episode_rewards) >= log_every:
+                last_n = episode_rewards[-log_every:]
+                logger.log(ep_count, {"episode_reward": episode_rewards[-1],
+                    "mean_reward_last_n": float(np.mean(last_n)),
+                    "epsilon": round(self.epsilon, 4),
+                    "mean_loss": float(np.mean(ep_losses)) if ep_losses else 0.0,
+                    "lr": round(self.optimizer.param_groups[0]["lr"], 6),
+                }, verbose=verbose and (ep_count % 100 == 0))
+                ep_losses = []
+                log_trigger += log_every
+
+            if ep_count > 0 and ep_count % save_every == 0:
+                self._vec_normalizer = normalizer
+                self.save(os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_ep{ep_count}.pt"))
+
+            if len(episode_rewards) >= 100:
+                cur = float(np.mean(episode_rewards[-100:]))
+                if cur > best_mean:
+                    best_mean = cur
+                    self._vec_normalizer = normalizer
+                    self.save(best_path)
+                    if verbose:
+                        print(f"  [best] ep={ep_count}  mean100={best_mean:.2f}  -> saved")
+
+            states, actions = next_states, next_actions
+
+        logger.close(); vec_env.close()
+        self._episode = ep_count
         return episode_rewards
 
     # ------------------------------------------------------------------
@@ -301,10 +526,11 @@ class DeepSARSAAgent:
         env_cfg = self.config.get("environment", {})
         normalize = env_cfg.get("normalize_obs", True)
         env = make_env(
-            env_name  = env_cfg.get("name", "LunarLander-v3"),
-            normalize = normalize,
-            variant   = env_variant,
-            seed      = seed,
+            env_name       = env_cfg.get("name", "LunarLander-v3"),
+            normalize      = normalize,
+            variant        = env_variant,
+            seed           = seed,
+            reward_weights = self.reward_weights,
         )
         # Restore normalizer state if available (saved from training)
         if normalize and hasattr(self, "_norm_mean") and self._norm_mean is not None:
@@ -357,17 +583,21 @@ class DeepSARSAAgent:
         norm_mean = env._normalizer.mean.copy() if env is not None else getattr(self, "_norm_mean", None)
         norm_var  = env._normalizer.var.copy()  if env is not None else getattr(self, "_norm_var",  None)
         norm_count = env._normalizer.count      if env is not None else getattr(self, "_norm_count", None)
+        vnorm = getattr(self, "_vec_normalizer", None)
         torch.save({
-            "q_network":     self.q_network.state_dict(),
+            "q_network":      self.q_network.state_dict(),
             "target_network": self.target_network.state_dict(),
-            "optimizer":     self.optimizer.state_dict(),
-            "epsilon":       self.epsilon,
-            "episode":       self._episode,
-            "config":        self.config,
-            "seed":          self.seed,
-            "norm_mean":     norm_mean,
-            "norm_var":      norm_var,
-            "norm_count":    norm_count,
+            "optimizer":      self.optimizer.state_dict(),
+            "epsilon":        self.epsilon,
+            "episode":        self._episode,
+            "config":         self.config,
+            "seed":           self.seed,
+            "norm_mean":      norm_mean,
+            "norm_var":       norm_var,
+            "norm_count":     norm_count,
+            "vec_norm_mean":  vnorm.mean  if vnorm else None,
+            "vec_norm_var":   vnorm.var   if vnorm else None,
+            "vec_norm_count": vnorm.count if vnorm else None,
         }, path)
 
     def load(self, path: str) -> None:
