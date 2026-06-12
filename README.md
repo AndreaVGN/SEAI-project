@@ -25,32 +25,49 @@ Environment: `LunarLander-v3` (Gymnasium) + 3 custom variants for generalisation
 
 Welch's t-test on training finals: p = 0.039 (SARSA > A2C, significant at α = 0.05).
 
+---
+
 ## Repository Structure
 
 ```
 project/
 ├── config/
-│   ├── sarsa_config.yaml          # SARSA hyperparameters
-│   └── actor_critic_config.yaml   # A2C hyperparameters
+│   ├── sarsa_config.yaml            # SARSA hyperparameters + ablation flags
+│   └── actor_critic_config.yaml     # A2C hyperparameters + ablation flags
 ├── src/
 │   ├── environment/
-│   │   └── lunar_lander_wrapper.py  # Custom wrapper + variants + VecRunningNormalizer
+│   │   ├── lunar_lander_wrapper.py  # Wrapper, variants, VecRunningNormalizer
+│   │   └── custom_reward.py         # CustomLunarLander with configurable coefficients
 │   ├── networks/
 │   │   ├── sarsa_network.py         # Q-network (MLP)
 │   │   └── actor_critic_network.py  # Actor + Critic networks
 │   ├── agents/
-│   │   ├── deep_sarsa.py            # Deep SARSA agent
-│   │   └── actor_critic.py          # A2C agent (vectorised training)
+│   │   ├── deep_sarsa.py            # Deep SARSA (replay buffer / online / parallel)
+│   │   └── actor_critic.py          # A2C (single env + vectorised)
 │   └── utils/
-│       ├── replay_buffer.py         # SARSA replay buffer
-│       ├── logger.py                # CSV logger
+│       ├── replay_buffer.py         # Experience replay buffer
+│       ├── logger.py                # CSV logger + run_info.json
 │       └── metrics.py               # Statistics + plots
-├── train.py                        # Multi-seed training + grid search
-├── evaluate.py                     # Single-seed evaluation on all variants
-├── evaluate_all.py                 # Aggregate evaluation across all seeds
-├── compare.py                      # Learning curves + Welch's t-test
+├── models/                          # Saved checkpoints (.pt)
+│   └── {tag}{agent}_seed{seed}_{best|ep*}.pt
+├── results/
+│   ├── logs/                        # Per-run training logs
+│   │   └── {tag}{agent}_seed{seed}/
+│   │       ├── training_log.csv
+│   │       └── run_info.json        # Proof of completed run
+│   ├── videos/                      # Recorded episodes
+│   │   └── {agent}/{variant}/
+│   └── evaluation_*.json            # Aggregate evaluation results
+├── train.py                         # Multi-seed training + grid search
+├── evaluate.py                      # Single-seed evaluation on all variants
+├── evaluate_all.py                  # Aggregate evaluation across all seeds
+├── compare.py                       # Learning curves + Welch's t-test
+├── record_video.py                  # Record episodes from a checkpoint
+├── make_progress_video.py           # Stitch per-checkpoint frames into one video
 └── requirements.txt
 ```
+
+---
 
 ## Quickstart
 
@@ -72,7 +89,7 @@ python train.py --agent ac    --device cpu
 python train.py --agent sarsa --episodes 100 --seeds 42 --device cpu
 ```
 
-### Grid search
+### Grid Search
 
 ```bash
 # SARSA — search learning rate × epsilon decay:
@@ -82,9 +99,9 @@ python train.py --agent sarsa --seeds 42 --device cpu \
 # A2C — search entropy coefficient:
 python train.py --agent ac --seeds 42 --device cpu \
     --grid entropy_coef=0.001,0.003,0.005,0.01
-
-# Results are printed ranked and saved to results/grid_{agent}_{timestamp}.json
 ```
+
+Results are printed ranked and saved to `results/grid_{agent}_{timestamp}.json`.
 
 ### Evaluation
 
@@ -104,168 +121,271 @@ python evaluate_all.py --n_eval 100 --ckpt_type best --device cpu
 python compare.py
 ```
 
+### Videos
+
+```bash
+# Record 3 episodes from the best checkpoint of each variant:
+python record_video.py --agent sarsa --seed 42 --ckpt_type best
+python record_video.py --agent ac    --seed 42 --ckpt_type best
+
+# Progress video — stitch all periodic checkpoints into one MP4:
+python make_progress_video.py --agent sarsa --seed 42
+python make_progress_video.py --agent ac    --seed 42
+```
+
+---
+
 ## Hyperparameters
 
-Both agents use **cosine annealing** learning-rate scheduling and **best-checkpoint saving** (rolling mean of last 100 episodes). Final hyperparameters were selected via grid search.
+Both agents use **cosine annealing** LR scheduling and **best-checkpoint saving** (rolling mean of last 100 episodes). Final hyperparameters were selected via grid search.
 
 | Parameter | Deep SARSA | A2C |
 |-----------|-----------|-----|
 | LR (start → end) | 5×10⁻⁴ → 5×10⁻⁵ | actor 3×10⁻⁴ → 10⁻⁵ / critic 10⁻⁴ → 10⁻⁵ |
 | γ | 0.99 | 0.99 |
 | ε decay | 0.995 (→ 0.01 at ep ~920) | — |
-| Entropy coef β | — | 0.003 (grid search) |
-| n-step horizon | — | 200 (near-Monte Carlo) |
+| Entropy coef β | — | 0.003 |
+| n-step horizon | — | 200 |
 | Parallel envs | 1 | 8 (SyncVectorEnv) |
 | Batch size | 128 | — |
 | Buffer | 50 000 | — |
 | Episodes | 3 000 | 5 000 |
 | Seeds | 42, 123, 456, 789, 1234 | 42, 123, 456, 789, 1234 |
 
+---
+
+## Ablation Studies
+
+All ablations share the same CLI as standard training. The `--tag` flag prefixes checkpoint and log filenames so ablation runs never overwrite the baseline.
+
+Checkpoints are saved as `models/{tag}{agent}_seed{seed}_best.pt`.  
+Logs are saved to `results/logs/{tag}{agent}_seed{seed}/run_info.json`.
+
+### CLI Flag Reference
+
+| Flag | Agent | Description |
+|------|-------|-------------|
+| `--no_replay_buffer` | SARSA | Disable the replay buffer (online TD updates) |
+| `--parallel_envs N` | SARSA | N parallel envs, implies no replay buffer |
+| `--n_steps N` | A2C | Override `n_step_horizon` |
+| `--num_envs N` | A2C | Override number of parallel environments |
+| `--reward_coef K=V` | both | Override a single reward coefficient (repeatable) |
+| `--tag PREFIX` | both | Prefix for checkpoint and log filenames |
+
+---
+
+### 1 · Deep SARSA — With vs Without Replay Buffer
+
+The replay buffer breaks temporal correlations between consecutive transitions. Disabling it means the network trains on one correlated transition at a time.
+
+**Baseline (with buffer)** — default behaviour, no extra flags:
+```bash
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000
+```
+
+**Without replay buffer** (online TD):
+```bash
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --no_replay_buffer --tag noreplay_
+```
+
+**Evaluate:**
+```bash
+# Baseline
+python evaluate_all.py --agents sarsa --n_eval 100
+
+# No-buffer ablation
+python evaluate_all.py --agents sarsa --n_eval 100 --tag noreplay_
+```
+
+---
+
+### 2 · Deep SARSA — Parallel Environments (no buffer)
+
+Decorrelation via environment diversity instead of a replay buffer.  
+`--parallel_envs N` automatically implies `--no_replay_buffer`.
+
+```bash
+# 4 parallel envs
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --parallel_envs 4 --tag parallel4_
+
+# 8 parallel envs
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --parallel_envs 8 --tag parallel8_
+```
+
+**Evaluate:**
+```bash
+python evaluate_all.py --agents sarsa --n_eval 100 --tag parallel4_
+python evaluate_all.py --agents sarsa --n_eval 100 --tag parallel8_
+```
+
+Three-way comparison: baseline (buffer) · no buffer (1 env) · no buffer (N envs).
+
+---
+
+### 3 · A2C — n_steps Sweep
+
+`n_steps` controls the bias–variance trade-off of the return estimate:
+- small values → TD-like (high bias, low variance)
+- large values → near-Monte Carlo (low bias, high variance)
+
+```bash
+# n_steps = 5
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 5 --tag nstep5_
+
+# n_steps = 20
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 20 --tag nstep20_
+
+# n_steps = 50
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 50 --tag nstep50_
+
+# n_steps = 200 — baseline (default)
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234
+```
+
+**Evaluate:**
+```bash
+python evaluate_all.py --agents ac --n_eval 100 --tag nstep5_
+python evaluate_all.py --agents ac --n_eval 100 --tag nstep20_
+python evaluate_all.py --agents ac --n_eval 100 --tag nstep50_
+python evaluate_all.py --agents ac --n_eval 100              # baseline
+```
+
+---
+
+### 4 · A2C — num_envs Sweep (fixed n_steps)
+
+Fix `n_steps` at a short horizon and vary the number of parallel environments to study whether environment diversity compensates for the shorter return window.
+
+```bash
+# 1 env, n_steps 20
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 20 --num_envs 1 --tag e1s20_
+
+# 4 envs, n_steps 20
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 20 --num_envs 4 --tag e4s20_
+
+# 8 envs, n_steps 20
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 20 --num_envs 8 --tag e8s20_
+
+# 16 envs, n_steps 20
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --n_steps 20 --num_envs 16 --tag e16s20_
+```
+
+**Evaluate:**
+```bash
+python evaluate_all.py --agents ac --n_eval 100 --tag e1s20_
+python evaluate_all.py --agents ac --n_eval 100 --tag e4s20_
+python evaluate_all.py --agents ac --n_eval 100 --tag e8s20_
+python evaluate_all.py --agents ac --n_eval 100 --tag e16s20_
+```
+
+---
+
+### 5 · Reward Coefficient Ablation
+
+`CustomLunarLander` replicates the standard Gymnasium reward function but with configurable coefficients. The default coefficients reproduce the original environment exactly.
+
+**Gymnasium reward formula:**
+```
+shaping  = -100·dist - 100·speed - 100·|angle| + 10·(leg_L + leg_R)
+r        = Δshaping - 0.30·m_power - 0.03·s_power
+terminal = ±100  (crash / land)
+```
+
+**Available coefficient keys:**
+
+| Key | Default | Controls |
+|-----|---------|----------|
+| `pos_coef` | 100 | Distance-to-pad penalty |
+| `vel_coef` | 100 | Speed penalty |
+| `angle_coef` | 100 | Tilt penalty |
+| `leg_reward` | 10 | Leg-contact bonus |
+| `main_engine_coef` | 0.30 | Main engine fuel cost |
+| `side_engine_coef` | 0.03 | Side engine fuel cost |
+| `crash_penalty` | 100 | Terminal crash penalty |
+| `land_bonus` | 100 | Terminal landing bonus |
+
+**Examples:**
+
+```bash
+# SARSA — increase angle penalty, halve speed penalty
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --reward_coef angle_coef=200 vel_coef=50 \
+    --tag rc_angle_
+
+# A2C — increase fuel costs (encourage efficiency)
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --reward_coef main_engine_coef=1.0 side_engine_coef=0.1 \
+    --tag rc_fuel_
+
+# Both agents — increase landing bonus
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --reward_coef land_bonus=200 --tag rc_land_
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --reward_coef land_bonus=200 --tag rc_land_
+```
+
+Alternatively, set `reward_coefficients.enabled: true` and edit the values directly in `config/sarsa_config.yaml` or `config/actor_critic_config.yaml`.
+
+**Evaluate:**
+```bash
+python evaluate_all.py --agents sarsa --n_eval 100 --tag rc_angle_
+python evaluate_all.py --agents ac    --n_eval 100 --tag rc_fuel_
+python evaluate_all.py --agents sarsa ac --n_eval 100 --tag rc_land_
+```
+
+---
+
+### Evaluation Output
+
+Each `evaluate_all.py` run saves a JSON to `results/`:
+
+```
+results/evaluation_{tag}_{ckpt_type}_{timestamp}.json
+```
+
+The JSON contains per-seed and aggregated (mean ± std) results for all 4 environment variants, ready for statistical analysis.
+
+```bash
+# Baseline (no tag)
+python evaluate_all.py --n_eval 100
+# → results/evaluation_baseline_best_YYYYMMDD_HHMMSS.json
+
+# Ablation
+python evaluate_all.py --tag noreplay_ --agents sarsa --n_eval 100
+# → results/evaluation_noreplay_best_YYYYMMDD_HHMMSS.json
+```
+
+---
+
 ## Referenced Repositories
 
 - Deep SARSA base: [JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v3](https://github.com/JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v3)
 - Actor-Critic base: [nikhilbarhate99/Actor-Critic-PyTorch](https://github.com/nikhilbarhate99/Actor-Critic-PyTorch)
 
-Both were significantly extended with: unified training framework, custom environment wrapper with observation normalisation, vectorised environments (A2C), cosine annealing LR scheduling, grid search CLI, best-checkpoint auto-saving, multi-seed aggregate evaluation, and statistical analysis.
-
----
-
-## Ablation Studies
-
-All ablations use the same CLI as standard training — pass flags to override config values.  
-Checkpoints are saved with the `--tag` prefix so they never overwrite the baseline.
-
-### 1 · Deep SARSA — con e senza Replay Buffer
-
-**Baseline (con buffer)** — comportamento di default, nessun flag necessario:
-```bash
-python train.py --agent sarsa --seeds 42 --episodes 3000 --device cpu
-```
-
-**Senza replay buffer** (online TD, correlazione massima tra osservazioni):
-```bash
-python train.py --agent sarsa --seeds 42 --episodes 3000 \
-    --no_replay_buffer --tag noreplay_
-```
-
-Confronta le learning curve nei log in `results/logs/` per vedere l'impatto
-della decorrelazione tramite buffer.
-
----
-
-### 2 · Deep SARSA — Ambienti Paralleli senza Replay Buffer
-
-Decorrelazione via diversità degli ambienti invece del buffer.  
-`--parallel_envs N` implica automaticamente `--no_replay_buffer`.
-
-```bash
-# 4 ambienti paralleli
-python train.py --agent sarsa --seeds 42 --episodes 3000 \
-    --parallel_envs 4 --tag parallel4_
-
-# 8 ambienti paralleli
-python train.py --agent sarsa --seeds 42 --episodes 3000 \
-    --parallel_envs 8 --tag parallel8_
-```
-
-Confronto a tre vie: baseline (buffer) · no buffer (1 env) · no buffer (N env).
-
----
-
-### 3 · A2C — Sweep di n\_steps
-
-`n_steps` controlla il trade-off bias–varianza del return:
-- valori piccoli → TD puro (alto bias, bassa varianza)
-- valori grandi → near-Monte Carlo (basso bias, alta varianza)
-
-```bash
-# n_steps = 5 (TD breve)
-python train.py --agent ac --seeds 42 --n_steps 5 --tag nstep5_
-
-# n_steps = 20
-python train.py --agent ac --seeds 42 --n_steps 20 --tag nstep20_
-
-# n_steps = 50
-python train.py --agent ac --seeds 42 --n_steps 50 --tag nstep50_
-
-# n_steps = 200 (baseline)
-python train.py --agent ac --seeds 42
-```
-
----
-
-### 4 · A2C — Sweep di num\_envs (a n\_steps fisso)
-
-Fissa `n_steps` piccolo e varia il numero di ambienti paralleli per vedere
-se la diversità compensa la finestra corta.
-
-```bash
-# 1 env, n_steps 20
-python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 1 --tag e1s20_
-
-# 4 env, n_steps 20
-python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 4 --tag e4s20_
-
-# 8 env, n_steps 20  (stesse transizioni totali del baseline e8s200 ma orizz. più corto)
-python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 8 --tag e8s20_
-
-# 16 env, n_steps 20
-python train.py --agent ac --seeds 42 --n_steps 20 --num_envs 16 --tag e16s20_
-```
-
----
-
-### 5 · Reward Shaping (entrambi gli agenti)
-
-Aggiunge penalità configurabili sopra al reward originale dell'ambiente.  
-I coefficienti positivi producono penalità (reward sottratto).
-
-Componenti disponibili:
-
-| Chiave | Formula | Significato |
-|--------|---------|-------------|
-| `angle_penalty` | `−c·\|obs[4]\|` | penalizza l'inclinazione |
-| `angular_vel_penalty` | `−c·\|obs[5]\|` | penalizza la rotazione |
-| `vel_penalty` | `−c·√(vx²+vy²)` | penalizza la velocità totale |
-| `x_penalty` | `−c·\|obs[0]\|` | penalizza l'offset orizzontale dal pad |
-| `fuel_penalty_main` | `−c` se `action==2` | penalizza il motore principale |
-| `fuel_penalty_side` | `−c` se `action∈{1,3}` | penalizza i motori laterali |
-
-**Esempi:**
-
-```bash
-# SARSA — penalizza inclinazione e rotazione
-python train.py --agent sarsa --seeds 42 \
-    --reward_shaping angle_penalty=0.5 angular_vel_penalty=0.1 \
-    --tag shape_angle_
-
-# A2C — penalizza consumo carburante
-python train.py --agent ac --seeds 42 \
-    --reward_shaping fuel_penalty_main=0.3 fuel_penalty_side=0.1 \
-    --tag shape_fuel_
-
-# A2C — shaping aggressivo su velocità
-python train.py --agent ac --seeds 42 \
-    --reward_shaping vel_penalty=0.5 angle_penalty=0.3 \
-    --tag shape_vel_
-```
-
-In alternativa, modifica direttamente la sezione `reward_shaping:` nei file
-`config/sarsa_config.yaml` o `config/actor_critic_config.yaml` e imposta
-`enabled: true`.
-
----
-
-### Riepilogo flag CLI per ablation
-
-| Flag | Agente | Descrizione |
-|------|--------|-------------|
-| `--no_replay_buffer` | SARSA | Disabilita il replay buffer |
-| `--parallel_envs N` | SARSA | N ambienti paralleli, nessun buffer |
-| `--n_steps N` | A2C | Override di `n_step_horizon` |
-| `--num_envs N` | A2C | Override di `num_envs` |
-| `--reward_shaping K=V ...` | entrambi | Pesi di reward shaping |
-| `--tag PREFIX` | entrambi | Prefisso per i checkpoint (evita sovrascritture) |
-
-I checkpoint ablation vengono salvati come `models/{tag}sarsa_seed{seed}_best.pt`.  
-Per valutare un checkpoint ablation usa `evaluate.py --sarsa_ckpt models/{tag}...`.
+Both were significantly extended with: unified training framework, custom environment wrapper with observation normalisation, vectorised environments (A2C), cosine annealing LR scheduling, grid search CLI, best-checkpoint auto-saving, per-run log folders, multi-seed aggregate evaluation, ablation study infrastructure, and statistical analysis.

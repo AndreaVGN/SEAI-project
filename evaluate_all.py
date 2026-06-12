@@ -14,6 +14,12 @@ Usage
 
     # Custom episodes per training run
     python evaluate_all.py --sarsa_episodes 3000 --ac_episodes 5000 --n_eval 100
+
+    # Ablation runs (tagged checkpoints, e.g. noreplay_sarsa_seed42_best.pt)
+    python evaluate_all.py --tag noreplay_ --agents sarsa --n_eval 100
+    python evaluate_all.py --tag parallel8_ --agents sarsa --n_eval 100
+    python evaluate_all.py --tag nsteps50_ --agents ac --n_eval 100
+    python evaluate_all.py --tag reward_coef_ --agents sarsa ac --n_eval 100
 """
 
 from __future__ import annotations
@@ -48,18 +54,18 @@ def get_env_dims(env_name: str = "LunarLander-v3") -> tuple[int, int]:
 
 
 def ckpt_path(agent: str, seed: int, ckpt_type: str,
-              sarsa_ep: int, ac_ep: int) -> Path:
-    """Build checkpoint path based on agent, seed and type (best/last)."""
+              sarsa_ep: int, ac_ep: int, tag: str = "") -> Path:
+    """Build checkpoint path based on agent, seed, type (best/last), and optional tag prefix."""
     ep = sarsa_ep if agent == "sarsa" else ac_ep
     if ckpt_type == "best":
-        return Path(f"models/{agent}_seed{seed}_best.pt")
-    return Path(f"models/{agent}_seed{seed}_ep{ep}.pt")
+        return Path(f"models/{tag}{agent}_seed{seed}_best.pt")
+    return Path(f"models/{tag}{agent}_seed{seed}_ep{ep}.pt")
 
 
 def evaluate_seed(agent_name: str, ckpt: Path, config: dict,
                   state_dim: int, action_dim: int,
-                  device: torch.device, variants: list[str],
-                  n_eval: int) -> dict | None:
+                  device: torch.device, variants: list,
+                  n_eval: int):
     """Load checkpoint and evaluate on all variants. Returns None if missing."""
     if not ckpt.exists():
         print(f"    ⚠  checkpoint not found: {ckpt} — skipping")
@@ -88,7 +94,7 @@ def evaluate_seed(agent_name: str, ckpt: Path, config: dict,
     return results
 
 
-def aggregate(per_seed: list[dict], variants: list[str]) -> dict:
+def aggregate(per_seed: list, variants: list) -> dict:
     """Average per-seed results across seeds for each variant."""
     agg = {}
     for v in variants:
@@ -105,7 +111,7 @@ def aggregate(per_seed: list[dict], variants: list[str]) -> dict:
     return agg
 
 
-def print_summary(agent_label: str, agg: dict, variants: list[str]) -> None:
+def print_summary(agent_label: str, agg: dict, variants: list) -> None:
     print(f"\n  ┌─ {agent_label} — aggregated over {list(agg.values())[0]['n_seeds']} seeds")
     for v in variants:
         r = agg[v]
@@ -135,8 +141,16 @@ def main():
                         help="Used to build last-checkpoint filename for A2C")
     parser.add_argument("--agents",          nargs="+",
                         choices=["sarsa", "ac"], default=["sarsa", "ac"])
+    parser.add_argument("--tag",             type=str, default="",
+                        help="Tag prefix for checkpoint filenames (e.g. 'noreplay_', 'parallel8_'). "
+                             "Looks for models/{tag}{agent}_seed{seed}_best.pt")
     parser.add_argument("--device",          default="auto")
     args = parser.parse_args()
+
+    # Ensure tag ends with _ if non-empty and doesn't already
+    tag = args.tag
+    if tag and not tag.endswith("_"):
+        tag = tag + "_"
 
     # ── Device ────────────────────────────────────────────────────────────────
     if args.device == "auto":
@@ -150,6 +164,8 @@ def main():
         device = torch.device(args.device)
     print(f"\nUsing device: {device}")
     print(f"Checkpoint type: {args.ckpt_type}")
+    if tag:
+        print(f"Tag prefix: '{tag}'")
     print(f"Seeds: {args.seeds}  |  n_eval: {args.n_eval} episodes/variant\n")
 
     sarsa_cfg = load_config("config/sarsa_config.yaml")
@@ -166,7 +182,7 @@ def main():
         cfg   = configs[agent_name]
         label = labels[agent_name]
         print(f"{'='*60}")
-        print(f"  {label}")
+        print(f"  {label}" + (f"  [tag={tag}]" if tag else ""))
         print(f"{'='*60}")
 
         per_seed_results = []
@@ -174,7 +190,7 @@ def main():
 
         for seed in args.seeds:
             ckpt = ckpt_path(agent_name, seed, args.ckpt_type,
-                             args.sarsa_episodes, args.ac_episodes)
+                             args.sarsa_episodes, args.ac_episodes, tag=tag)
             print(f"\n  seed={seed}  [{ckpt.name}]")
             res = evaluate_seed(agent_name, ckpt, cfg, state_dim, action_dim,
                                 device, variants, args.n_eval)
@@ -186,8 +202,8 @@ def main():
         all_data[agent_name] = seed_data
         print_summary(label, agg, variants)
 
-    # ── Comparison table ──────────────────────────────────────────────────────
-    if len(args.agents) == 2:
+    # ── Comparison table (only when both agents evaluated) ───────────────────
+    if len(args.agents) == 2 and "sarsa" in all_agg and "ac" in all_agg:
         print(f"\n{'='*60}")
         print("  GENERALISATION COMPARISON  (mean of means across seeds)")
         print(f"{'='*60}")
@@ -202,11 +218,13 @@ def main():
 
     # ── Save JSON ─────────────────────────────────────────────────────────────
     import datetime
-    ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = Path(f"results/evaluation_all_{args.ckpt_type}_{ts}.json")
+    ts      = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    tag_str = tag.rstrip("_") if tag else "baseline"
+    out     = Path(f"results/evaluation_{tag_str}_{args.ckpt_type}_{ts}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump({
+            "tag":       tag,
             "ckpt_type": args.ckpt_type,
             "seeds":     args.seeds,
             "n_eval":    args.n_eval,
