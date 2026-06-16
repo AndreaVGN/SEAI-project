@@ -76,6 +76,8 @@ def apply_cli_overrides(sarsa_cfg: dict, ac_cfg: dict, args) -> tuple:
         ac["agent"]["n_steps"] = args.n_steps
     if args.num_envs is not None:
         ac["agent"]["num_envs"] = args.num_envs
+    if args.entropy_coef is not None:
+        ac["agent"]["entropy_coef"] = args.entropy_coef
 
     # SARSA ablations
     if args.no_replay_buffer:
@@ -151,8 +153,7 @@ def train_agent(
         print(f"{'='*60}")
         agent = make_agent(agent_type, config, device, seed)
         t0 = time.time()
-        rewards = agent.train(log_dir=log_dir, save_dir=save_dir, verbose=verbose,
-                              **({} if agent_type == "ac" else {"tag": tag}))
+        rewards = agent.train(log_dir=log_dir, save_dir=save_dir, verbose=verbose, tag=tag)
         elapsed = time.time() - t0
         print(f"\n  Done in {elapsed:.1f}s | "
               f"Final mean (last 100 ep): {np.mean(rewards[-100:]):.2f}")
@@ -277,6 +278,8 @@ def main():
                         help="[A2C ablation] Override n_step_horizon in config")
     parser.add_argument("--num_envs", type=int, default=None,
                         help="[A2C ablation] Override num_envs in config")
+    parser.add_argument("--entropy_coef", type=float, default=None,
+                        help="[A2C ablation] Override entropy_coef in config (e.g. 0 to disable entropy regularisation)")
     parser.add_argument("--reward_coef", nargs="+", default=None,
                         metavar="KEY=VALUE",
                         help="Override reward coefficients, e.g. --reward_coef angle_coef=200 vel_coef=50")

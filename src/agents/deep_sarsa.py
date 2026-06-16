@@ -30,6 +30,7 @@ References:
 from __future__ import annotations
 
 import copy
+import json
 import os
 import time
 from pathlib import Path
@@ -266,7 +267,7 @@ class DeepSARSAAgent:
             env_name       = env_name,
             normalize      = normalize,
             seed           = self.seed,
-            reward_weights = self.reward_weights,
+            reward_coefs   = self.reward_coefs,
         )
 
         run_name    = f"{tag}sarsa_seed{self.seed}"
@@ -282,6 +283,7 @@ class DeepSARSAAgent:
             },
         )
         episode_rewards: List[float] = []
+        total_steps = 0
         best_mean   = -float("inf")
         best_path   = os.path.join(save_dir, f"{tag}sarsa_seed{self.seed}_best.pt")
 
@@ -293,6 +295,7 @@ class DeepSARSAAgent:
 
             for _ in range(max_steps):
                 next_state, reward, terminated, truncated, _ = env.step(action)
+                total_steps += 1
                 done        = terminated or truncated
                 next_action = self.select_action(next_state)
 
@@ -339,6 +342,17 @@ class DeepSARSAAgent:
                     self.save(best_path, env=env)
                     if verbose:
                         print(f"  [best] ep={ep}  mean100={best_mean:.2f}  → saved")
+
+        count_step_path = os.path.join(run_log_dir, "count_step.json")
+        with open(count_step_path, "w") as f:
+            json.dump({
+                "agent":          "sarsa",
+                "seed":           self.seed,
+                "tag":            tag,
+                "run_name":       run_name,
+                "total_episodes": len(episode_rewards),
+                "count_step":     total_steps,
+            }, f, indent=2)
 
         logger.close()
         env.close()
@@ -530,7 +544,7 @@ class DeepSARSAAgent:
             normalize      = normalize,
             variant        = env_variant,
             seed           = seed,
-            reward_weights = self.reward_weights,
+            reward_coefs   = self.reward_coefs,
         )
         # Restore normalizer state if available (saved from training)
         if normalize and hasattr(self, "_norm_mean") and self._norm_mean is not None:

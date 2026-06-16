@@ -31,6 +31,7 @@ References:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -372,6 +373,7 @@ class ActorCriticAgent:
         log_dir:  str = "results/logs",
         save_dir: str = "models",
         verbose:  bool = True,
+        tag:      str = "",
     ) -> List[float]:
         """
         Full training loop for one seed.
@@ -392,19 +394,20 @@ class ActorCriticAgent:
         if self.num_envs > 1:
             return self._train_vec(
                 env_name, normalize, n_episodes, max_steps,
-                save_every, log_every, log_dir, save_dir, verbose,
+                save_every, log_every, log_dir, save_dir, verbose, tag,
             )
 
         # ── Single-environment path (original) ────────────────────────
         env = make_env(env_name=env_name, normalize=normalize, seed=self.seed, reward_coefs=self.reward_coefs)
 
-        run_name    = f"ac_seed{self.seed}"
+        run_name    = f"{tag}ac_seed{self.seed}"
         run_log_dir = os.path.join(log_dir, run_name)
         logger = TrainingLogger(
             run_log_dir, agent_name="ac", seed=self.seed,
             run_info={
                 "run_name":   run_name,
                 "agent":      "ac",
+                "tag":        tag,
                 "n_steps":    self.n_steps,
                 "num_envs":   self.num_envs,
                 "config":     self.config,
@@ -412,8 +415,9 @@ class ActorCriticAgent:
             },
         )
         episode_rewards: List[float] = []
+        total_steps = 0
         best_mean = -float("inf")
-        best_path = os.path.join(save_dir, f"ac_seed{self.seed}_best.pt")
+        best_path = os.path.join(save_dir, f"{tag}ac_seed{self.seed}_best.pt")
 
         for ep in range(1, n_episodes + 1):
             state, _ = env.reset()
@@ -426,6 +430,7 @@ class ActorCriticAgent:
             for step in range(max_steps):
                 action, _ = self.select_action(state)
                 next_state, reward, terminated, truncated, _ = env.step(action)
+                total_steps += 1
                 done = terminated or truncated
 
                 seg_states.append(state)
@@ -462,7 +467,7 @@ class ActorCriticAgent:
                 }, verbose=verbose and (ep % 100 == 0))
 
             if ep % save_every == 0:
-                self.save(os.path.join(save_dir, f"ac_seed{self.seed}_ep{ep}.pt"), env=env)
+                self.save(os.path.join(save_dir, f"{tag}ac_seed{self.seed}_ep{ep}.pt"), env=env)
 
             # ── Best checkpoint ───────────────────────────────────────────
             if len(episode_rewards) >= 100:
@@ -472,6 +477,17 @@ class ActorCriticAgent:
                     self.save(best_path, env=env)
                     if verbose:
                         print(f"  [best] ep={ep}  mean100={best_mean:.2f}  → saved")
+
+        count_step_path = os.path.join(run_log_dir, "count_step.json")
+        with open(count_step_path, "w") as f:
+            json.dump({
+                "agent":          "ac",
+                "seed":           self.seed,
+                "tag":            tag,
+                "run_name":       run_name,
+                "total_episodes": len(episode_rewards),
+                "count_step":     total_steps,
+            }, f, indent=2)
 
         logger.close()
         env.close()
@@ -488,6 +504,7 @@ class ActorCriticAgent:
         log_dir:    str,
         save_dir:   str,
         verbose:    bool,
+        tag:        str = "",
     ) -> List[float]:
         """
         Vectorised training loop for num_envs > 1.
@@ -503,13 +520,14 @@ class ActorCriticAgent:
             shape=(vec_env.single_observation_space.shape[0],)
         ) if normalize else None
 
-        run_name    = f"ac_e{N}s{self.n_steps}_seed{self.seed}"
+        run_name    = f"{tag}ac_e{N}s{self.n_steps}_seed{self.seed}"
         run_log_dir = os.path.join(log_dir, run_name)
         logger = TrainingLogger(
             run_log_dir, agent_name="ac", seed=self.seed,
             run_info={
                 "run_name":   run_name,
                 "agent":      "ac",
+                "tag":        tag,
                 "n_steps":    self.n_steps,
                 "num_envs":   N,
                 "config":     self.config,
@@ -517,12 +535,13 @@ class ActorCriticAgent:
             },
         )
         episode_rewards: List[float] = []
+        total_steps = 0
 
         # Per-env running reward accumulators
         ep_rewards_running = np.zeros(N, dtype=np.float32)
         ep_metrics_buf     = {"actor_loss": [], "critic_loss": [], "entropy": []}
         best_mean_vec = -float("inf")
-        best_path_vec = os.path.join(save_dir, f"ac_seed{self.seed}_best.pt")
+        best_path_vec = os.path.join(save_dir, f"{tag}ac_seed{self.seed}_best.pt")
 
         # Initialise environments
         obs_batch, _ = vec_env.reset()
@@ -543,6 +562,7 @@ class ActorCriticAgent:
             for t in range(self.n_steps):
                 actions = self.select_action_batch(states)       # (N,)
                 obs_batch, rewards, terminated, truncated, _ = vec_env.step(actions)
+                total_steps += N   # N parallel env interactions per vec_env.step()
                 dones = (terminated | truncated).astype(np.float32)
 
                 seg_states[t]  = states
@@ -592,7 +612,7 @@ class ActorCriticAgent:
             # ── Checkpoint ─────────────────────────────────────────────
             if virtual_ep > 0 and virtual_ep % save_every == 0:
                 self._vec_normalizer = normalizer
-                self.save(os.path.join(save_dir, f"ac_seed{self.seed}_ep{virtual_ep}.pt"))
+                self.save(os.path.join(save_dir, f"{tag}ac_seed{self.seed}_ep{virtual_ep}.pt"))
 
             # ── Best checkpoint ───────────────────────────────────────────
             if len(episode_rewards) >= 100:
@@ -603,6 +623,19 @@ class ActorCriticAgent:
                     self.save(best_path_vec)
                     if verbose:
                         print(f"  [best] ep~{virtual_ep}  mean100={best_mean_vec:.2f}  → saved")
+
+        count_step_path = os.path.join(run_log_dir, "count_step.json")
+        with open(count_step_path, "w") as f:
+            json.dump({
+                "agent":          "ac",
+                "seed":           self.seed,
+                "tag":            tag,
+                "run_name":       run_name,
+                "num_envs":       N,
+                "n_steps":        self.n_steps,
+                "total_episodes": len(episode_rewards),
+                "count_step":     total_steps,
+            }, f, indent=2)
 
         logger.close()
         vec_env.close()
@@ -627,7 +660,7 @@ class ActorCriticAgent:
             normalize      = normalize,
             variant        = env_variant,
             seed           = seed,
-            reward_weights = self.reward_weights,
+            reward_coefs   = self.reward_coefs,
         )
         # Restore normalizer state if available
         if normalize and hasattr(self, "_norm_mean") and self._norm_mean is not None:

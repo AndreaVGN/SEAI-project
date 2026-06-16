@@ -170,6 +170,7 @@ Logs are saved to `results/logs/{tag}{agent}_seed{seed}/run_info.json`.
 | `--n_steps N` | A2C | Override `n_step_horizon` |
 | `--num_envs N` | A2C | Override number of parallel environments |
 | `--reward_coef K=V` | both | Override a single reward coefficient (repeatable) |
+| `--entropy_coef V` | A2C | Override entropy regularisation coefficient (e.g. `0` to disable) |
 | `--tag PREFIX` | both | Prefix for checkpoint and log filenames |
 
 ---
@@ -326,37 +327,99 @@ terminal = ±100  (crash / land)
 | `crash_penalty` | 100 | Terminal crash penalty |
 | `land_bonus` | 100 | Terminal landing bonus |
 
-**Examples:**
+**Four variants actually run for this project** (both agents, 5 seeds each):
 
+| Tag | Rationale | Overridden coefficients |
+|-----|-----------|--------------------------|
+| `rc_precise_` | Penalise imprecise landings more | `vel_coef=200 angle_coef=200` |
+| `rc_fuel_` | Penalise fuel use more (efficiency) | `main_engine_coef=1.0 side_engine_coef=0.3` |
+| `rc_terminal_` | Amplify the terminal crash/landing signal | `crash_penalty=300 land_bonus=300` |
+| `rc_lazy_` | Weaken shaping (sparser feedback) | `vel_coef=10 angle_coef=10 leg_reward=1` |
+
+**Training (all 5 seeds, both agents):**
 ```bash
-# SARSA — increase angle penalty, halve speed penalty
+# rc_precise — double speed/angle penalty
 python train.py --agent sarsa --device cpu \
     --seeds 42 123 456 789 1234 --episodes 3000 \
-    --reward_coef angle_coef=200 vel_coef=50 \
-    --tag rc_angle_
-
-# A2C — increase fuel costs (encourage efficiency)
+    --reward_coef vel_coef=200 angle_coef=200 --tag rc_precise_
 python train.py --agent ac --device cpu \
     --seeds 42 123 456 789 1234 \
-    --reward_coef main_engine_coef=1.0 side_engine_coef=0.1 \
-    --tag rc_fuel_
+    --reward_coef vel_coef=200 angle_coef=200 --tag rc_precise_
 
-# Both agents — increase landing bonus
+# rc_fuel — more expensive engines
 python train.py --agent sarsa --device cpu \
     --seeds 42 123 456 789 1234 --episodes 3000 \
-    --reward_coef land_bonus=200 --tag rc_land_
+    --reward_coef main_engine_coef=1.0 side_engine_coef=0.3 --tag rc_fuel_
 python train.py --agent ac --device cpu \
     --seeds 42 123 456 789 1234 \
-    --reward_coef land_bonus=200 --tag rc_land_
+    --reward_coef main_engine_coef=1.0 side_engine_coef=0.3 --tag rc_fuel_
+
+# rc_terminal — stronger crash/landing signal
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --reward_coef crash_penalty=300 land_bonus=300 --tag rc_terminal_
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --reward_coef crash_penalty=300 land_bonus=300 --tag rc_terminal_
+
+# rc_lazy — weaker shaping (less precision feedback)
+python train.py --agent sarsa --device cpu \
+    --seeds 42 123 456 789 1234 --episodes 3000 \
+    --reward_coef vel_coef=10 angle_coef=10 leg_reward=1 --tag rc_lazy_
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --reward_coef vel_coef=10 angle_coef=10 leg_reward=1 --tag rc_lazy_
 ```
 
 Alternatively, set `reward_coefficients.enabled: true` and edit the values directly in `config/sarsa_config.yaml` or `config/actor_critic_config.yaml`.
 
+**Evaluate (both agents, all seeds):**
+```bash
+python evaluate_all.py --tag rc_precise_  --agents sarsa ac --n_eval 100
+python evaluate_all.py --tag rc_fuel_     --agents sarsa ac --n_eval 100
+python evaluate_all.py --tag rc_terminal_ --agents sarsa ac --n_eval 100
+python evaluate_all.py --tag rc_lazy_     --agents sarsa ac --n_eval 100
+```
+
+**Progress video (seed 42, both agents):**
+```bash
+python make_progress_video.py --agent sarsa --seed 42 --tag rc_precise_  --step 400
+python make_progress_video.py --agent ac    --seed 42 --tag rc_precise_  --step 400
+python make_progress_video.py --agent sarsa --seed 42 --tag rc_fuel_     --step 400
+python make_progress_video.py --agent ac    --seed 42 --tag rc_fuel_     --step 400
+python make_progress_video.py --agent sarsa --seed 42 --tag rc_terminal_ --step 400
+python make_progress_video.py --agent ac    --seed 42 --tag rc_terminal_ --step 400
+python make_progress_video.py --agent sarsa --seed 42 --tag rc_lazy_     --step 400
+python make_progress_video.py --agent ac    --seed 42 --tag rc_lazy_     --step 400
+```
+
+---
+
+### 6 · A2C — Entropy Regularisation Ablation
+
+Entropy regularisation adds a bonus proportional to the action-distribution entropy, encouraging exploration and discouraging premature policy collapse. This ablation disables it entirely (`entropy_coef=0`, baseline is `0.003`) to test how much it actually contributes to final performance.
+
+**Single-seed smoke test:**
+```bash
+python train.py --agent ac --device cpu \
+    --seeds 42 --entropy_coef 0 --tag noentropy_
+```
+
+**All 5 seeds:**
+```bash
+python train.py --agent ac --device cpu \
+    --seeds 42 123 456 789 1234 \
+    --entropy_coef 0 --tag noentropy_
+```
+
 **Evaluate:**
 ```bash
-python evaluate_all.py --agents sarsa --n_eval 100 --tag rc_angle_
-python evaluate_all.py --agents ac    --n_eval 100 --tag rc_fuel_
-python evaluate_all.py --agents sarsa ac --n_eval 100 --tag rc_land_
+python evaluate_all.py --tag noentropy_ --agents ac --n_eval 100
+```
+
+**Progress video:**
+```bash
+python make_progress_video.py --agent ac --seed 42 --tag noentropy_
 ```
 
 ---

@@ -22,6 +22,8 @@ models/
 results/logs/
 results/*.png
 results/*.json
+results/videos/*
+results/*
 
 # Jupyter
 .ipynb_checkpoints/
