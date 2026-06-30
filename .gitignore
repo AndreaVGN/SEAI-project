@@ -53,7 +53,6 @@ presentation/*.blg
 *.swp
 *.swo
 
-# Cowork session files
-CLAUDE.md
+# presentation files
 presentation/
 presentation/
