@@ -23,6 +23,7 @@ from src.utils.metrics import (
     welch_t_test,
     plot_comparison,
     load_seed_rewards,
+    load_seed_episode_rewards,
 )
 
 
@@ -66,8 +67,14 @@ def main():
     seeds_ac    = ac_cfg["training"]["seeds"]
 
     print("\n=== Loading training logs ===")
+    # Plain reward lists (row-ordered) — used for final-performance stats /
+    # Welch's t-test / box plot, where only relative ordering matters.
     sarsa_rewards = load_seed_rewards(args.log_dir, "sarsa", seeds_sarsa)
     ac_rewards    = load_seed_rewards(args.log_dir, "ac",    seeds_ac)
+    # (episode_number, reward) pairs — used for the learning-curve plot,
+    # which needs the REAL episode number on the x-axis (see metrics.py).
+    sarsa_seed_data = load_seed_episode_rewards(args.log_dir, "sarsa", seeds_sarsa)
+    ac_seed_data    = load_seed_episode_rewards(args.log_dir, "ac",    seeds_ac)
 
     if not sarsa_rewards:
         print("[compare.py] No SARSA logs found. Run: python train.py --agent sarsa")
@@ -93,7 +100,7 @@ def main():
     # --- Plots ---
     Path("results").mkdir(exist_ok=True)
     plot_comparison(
-        sarsa_rewards, ac_rewards,
+        sarsa_seed_data, ac_seed_data,
         save_path=f"results/comparison_w{args.window}.png",
         window=args.window,
     )

@@ -26,43 +26,63 @@ import seaborn as sns
 # ---------------------------------------------------------------------------
 
 def compute_statistics(
-    rewards: List[List[float]],
+    seed_data: List[Tuple[np.ndarray, np.ndarray]],
     window: int = 50,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    step: int = 10,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Given a list of per-seed reward sequences, compute smoothed
-    mean, std, and 95 % CI across seeds.
+    Given a list of per-seed (episode_numbers, episode_rewards) arrays,
+    compute the smoothed mean and std across seeds, indexed by the REAL
+    episode number.
+
+    NOTE on a previous bug: this function used to take plain reward lists
+    and assume row index == episode number. That breaks for Deep SARSA
+    (which logs only every `log_every`-th episode, so 300 logged rows
+    actually span 3 000 real episodes) and for A2C (whose vectorised
+    training logs at irregular cadences). Both agents' logged "episode"
+    column already carries the correct real episode number — we use it
+    directly here instead of `np.arange(len(...))`.
+
+    Because seeds/agents log at different, non-uniform cadences, each
+    seed's curve is linearly interpolated onto a common episode grid
+    (resolution = `step` episodes) before averaging across seeds. A
+    rolling mean equivalent to `window` real episodes is then applied on
+    that grid (so "window=50" means ~50 episodes regardless of how
+    sparsely a given seed logged).
 
     Parameters
     ----------
-    rewards : list of shape [n_seeds][n_episodes]
-    window  : rolling window for smoothing
+    seed_data : list of (episode_array, reward_array) per seed
+    window    : rolling window, in real episodes, for smoothing
+    step      : resolution (in real episodes) of the common grid
 
     Returns
     -------
-    episodes : 1-D array
+    episodes : 1-D array (real episode numbers, common grid)
     mean     : smoothed mean across seeds
-    std      : smoothed std across seeds
-    ci95     : half-width of 95 % CI (1.96 * SE)
+    std      : smoothed std across seeds (ddof=1; zeros if only 1 seed)
     """
-    smoothed = []
-    for r in rewards:
-        s = pd.Series(r).rolling(window, min_periods=1).mean().values
-        smoothed.append(s)
+    if not seed_data:
+        raise ValueError("compute_statistics: no seed data provided")
 
-    # Seeds may have different lengths (e.g. A2C vectorised training).
-    # Truncate all to the shortest seed so the matrix is homogeneous.
-    min_len = min(len(s) for s in smoothed)
-    smoothed = [s[:min_len] for s in smoothed]
+    # Common grid: only cover the range every seed actually reached, to
+    # avoid extrapolating past where a seed stopped training.
+    first_ep = max(ep.min() for ep, _ in seed_data)
+    last_ep  = min(ep.max() for ep, _ in seed_data)
+    grid = np.arange(first_ep, last_ep + 1, step)
 
-    mat = np.array(smoothed)          # (n_seeds, n_episodes)
+    win_pts = max(1, round(window / step))
+    curves = []
+    for ep, rew in seed_data:
+        interp = np.interp(grid, ep, rew)
+        smooth = pd.Series(interp).rolling(win_pts, min_periods=1).mean().to_numpy()
+        curves.append(smooth)
+
+    mat  = np.array(curves)           # (n_seeds, n_grid_points)
     mean = mat.mean(axis=0)
     std  = mat.std(axis=0, ddof=1) if mat.shape[0] > 1 else np.zeros_like(mean)
-    n    = mat.shape[0]
-    ci95 = 1.96 * std / np.sqrt(n) if n > 1 else np.zeros_like(mean)
 
-    episodes = np.arange(1, len(mean) + 1)
-    return episodes, mean, std, ci95
+    return grid, mean, std
 
 
 def welch_t_test(
@@ -123,28 +143,32 @@ def _style():
 def plot_learning_curves(
     episodes:   np.ndarray,
     mean:       np.ndarray,
-    ci95:       np.ndarray,
+    std:        np.ndarray,
     agent_name: str,
     color:      str,
     ax:         plt.Axes,
     label:      str | None = None,
 ) -> None:
-    """Plot mean ± 95 % CI for one agent on a given Axes."""
+    """Plot mean ± 1 std for one agent on a given Axes."""
     lbl = label or agent_name
     ax.plot(episodes, mean, label=lbl, color=color, linewidth=1.5)
-    ax.fill_between(episodes, mean - ci95, mean + ci95, alpha=0.2, color=color)
+    ax.fill_between(episodes, mean - std, mean + std, alpha=0.2, color=color)
 
 
 def plot_comparison(
-    sarsa_rewards: List[List[float]],
-    ac_rewards:    List[List[float]],
-    save_path:     str = "results/comparison.png",
-    window:        int = 50,
+    sarsa_seed_data: List[Tuple[np.ndarray, np.ndarray]],
+    ac_seed_data:    List[Tuple[np.ndarray, np.ndarray]],
+    save_path:       str = "results/comparison.png",
+    window:          int = 50,
+    step:            int = 10,
 ) -> None:
     """
     Full comparison figure:
-      1. Learning curves with CI
+      1. Learning curves with mean ± 1 std (real episode numbers on x)
       2. Box-plot of final-100-episode returns per seed
+
+    `sarsa_seed_data` / `ac_seed_data` are lists of (episode_array,
+    reward_array) per seed, as returned by `load_seed_episode_rewards`.
     """
     _style()
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -154,21 +178,25 @@ def plot_comparison(
 
     # --- subplot 1: learning curves ---
     ax = axes[0]
-    for name, rewards, color in [
-        ("Deep SARSA", sarsa_rewards, colors["sarsa"]),
-        ("Actor-Critic (A2C)", ac_rewards, colors["ac"]),
+    for name, seed_data, color in [
+        ("Deep SARSA", sarsa_seed_data, colors["sarsa"]),
+        ("Actor-Critic (A2C)", ac_seed_data, colors["ac"]),
     ]:
-        ep, mean, _, ci95 = compute_statistics(rewards, window)
-        plot_learning_curves(ep, mean, ci95, name, color, ax)
+        ep, mean, std = compute_statistics(seed_data, window, step)
+        max_ep = max(e.max() for e, _ in seed_data)
+        ep_label = f"{max_ep/1000:.0f}k ep" if max_ep >= 1000 else f"{int(max_ep)} ep"
+        plot_learning_curves(ep, mean, std, name, color, ax, label=f"{name} ({ep_label})")
 
     ax.set_xlabel("Episode")
-    ax.set_ylabel(f"Reward (rolling mean, window={window})")
-    ax.set_title("Learning Curves (mean ± 95% CI)")
+    ax.set_ylabel(f"Return (rolling mean, ~{window}-ep window)")
+    ax.set_title("Learning Curves (mean ± 1 std across seeds)")
     ax.axhline(200, color="green", linestyle="--", linewidth=1, label="Solved (200)")
     ax.legend(fontsize=9)
 
     # --- subplot 2: box-plot of final returns ---
     ax = axes[1]
+    sarsa_rewards = [rew for _, rew in sarsa_seed_data]
+    ac_rewards    = [rew for _, rew in ac_seed_data]
     final_sarsa = [np.mean(r[-100:]) for r in sarsa_rewards]
     final_ac    = [np.mean(r[-100:]) for r in ac_rewards]
     df = pd.DataFrame(
@@ -176,16 +204,16 @@ def plot_comparison(
             ("Deep SARSA", final_sarsa),
             ("Actor-Critic (A2C)", final_ac),
         ] for v in vals],
-        columns=["Agent", "Mean Return (last 100 ep)"],
+        columns=["Agent", "Mean Return (last 100 logged points)"],
     )
     # seaborn ≥0.14: assign x to hue to avoid FutureWarning
     palette = {"Deep SARSA": colors["sarsa"], "Actor-Critic (A2C)": colors["ac"]}
     sns.boxplot(
-        data=df, x="Agent", y="Mean Return (last 100 ep)", ax=ax,
+        data=df, x="Agent", y="Mean Return (last 100 logged points)", ax=ax,
         hue="Agent", palette=palette, legend=False,
     )
     sns.stripplot(
-        data=df, x="Agent", y="Mean Return (last 100 ep)", ax=ax,
+        data=df, x="Agent", y="Mean Return (last 100 logged points)", ax=ax,
         hue="Agent", palette={"Deep SARSA": "black", "Actor-Critic (A2C)": "black"},
         size=4, jitter=True, alpha=0.6, legend=False,
     )
@@ -239,3 +267,29 @@ def load_seed_rewards(csv_dir: str, agent_name: str, seeds: List[int]) -> List[L
         else:
             print(f"[metrics] WARNING: 'episode_reward' column missing in {path}")
     return all_rewards
+
+
+def load_seed_episode_rewards(
+    csv_dir: str, agent_name: str, seeds: List[int]
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Load (episode_number, episode_reward) arrays per seed from CSV files
+    produced by TrainingLogger, using the REAL 'episode' column (not the
+    CSV row index — see compute_statistics docstring for why that matters).
+    """
+    all_data = []
+    for seed in seeds:
+        path = Path(csv_dir) / f"{agent_name}_seed{seed}.csv"
+        if not path.exists():
+            print(f"[metrics] WARNING: {path} not found — skipping seed {seed}")
+            continue
+        df = pd.read_csv(path)
+        if "episode" not in df.columns or "episode_reward" not in df.columns:
+            print(f"[metrics] WARNING: 'episode'/'episode_reward' columns missing in {path}")
+            continue
+        df = df.sort_values("episode")
+        all_data.append((
+            df["episode"].to_numpy(dtype=float),
+            df["episode_reward"].to_numpy(dtype=float),
+        ))
+    return all_data

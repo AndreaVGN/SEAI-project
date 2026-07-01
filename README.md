@@ -496,7 +496,7 @@ python evaluate_all.py --tag noreplay_ --agents sarsa --n_eval 100
 
 ## Referenced Repositories
 
-- Deep SARSA base: [JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v3](https://github.com/JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v3)
+- Deep SARSA base: [JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v2](https://github.com/JohDonald/Deep-Q-Learning-Deep-SARSA-LunarLander-v2)
 - Actor-Critic base: [nikhilbarhate99/Actor-Critic-PyTorch](https://github.com/nikhilbarhate99/Actor-Critic-PyTorch)
 
 Both were significantly extended with: unified training framework, custom environment wrapper with observation normalisation, vectorised environments (A2C), cosine annealing LR scheduling, grid search CLI, best-checkpoint auto-saving, per-run log folders, multi-seed aggregate evaluation, ablation study infrastructure, and statistical analysis.
