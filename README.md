@@ -31,6 +31,7 @@ Welch's t-test on training finals: p = 0.039 (SARSA > A2C, significant at α = 0
 
 ```
 project/
+├── media/                            # README preview assets (GIFs + sample MP4s)
 ├── config/
 │   ├── sarsa_config.yaml            # SARSA hyperparameters + ablation flags
 │   └── actor_critic_config.yaml     # A2C hyperparameters + ablation flags
@@ -122,6 +123,27 @@ python compare.py
 ```
 
 ### Videos
+
+Progress videos (standard variant, seed 42) stitching every periodic checkpoint into a single clip — landing behaviour visibly improves episode by episode:
+
+<table>
+<tr>
+<th>Deep SARSA</th>
+<th>A2C</th>
+</tr>
+<tr>
+<td><img src="media/sarsa_standard_seed42.gif" width="380"/></td>
+<td><img src="media/ac_standard_seed42.gif" width="380"/></td>
+</tr>
+<tr>
+<td><a href="media/sarsa_standard_seed42.mp4">Full MP4</a></td>
+<td><a href="media/ac_standard_seed42.mp4">Full MP4</a></td>
+</tr>
+</table>
+
+All other progress videos (environment variants, ablations) are available as MP4 files in [`media/`](media/) — browse the folder directly to watch them.
+
+Reproduce these or record any other agent/variant/ablation combination:
 
 ```bash
 # Record 3 episodes from the best checkpoint of each variant:
@@ -392,6 +414,32 @@ python make_progress_video.py --agent ac    --seed 42 --tag rc_terminal_ --step 
 python make_progress_video.py --agent sarsa --seed 42 --tag rc_lazy_     --step 400
 python make_progress_video.py --agent ac    --seed 42 --tag rc_lazy_     --step 400
 ```
+
+**Previews** (progress video per tag, seed 42 — click a GIF for the full MP4):
+
+<table>
+<tr><th></th><th>Deep SARSA</th><th>A2C</th></tr>
+<tr>
+<td><code>rc_precise_</code></td>
+<td><a href="media/rc_precise_sarsa_standard_seed42.mp4"><img src="media/rc_precise_sarsa_standard_seed42.gif" width="260"/></a></td>
+<td><a href="media/rc_precise_ac_standard_seed42.mp4"><img src="media/rc_precise_ac_standard_seed42.gif" width="260"/></a></td>
+</tr>
+<tr>
+<td><code>rc_fuel_</code></td>
+<td><a href="media/rc_fuel_sarsa_standard_seed42.mp4"><img src="media/rc_fuel_sarsa_standard_seed42.gif" width="260"/></a></td>
+<td><a href="media/rc_fuel_ac_standard_seed42.mp4"><img src="media/rc_fuel_ac_standard_seed42.gif" width="260"/></a></td>
+</tr>
+<tr>
+<td><code>rc_terminal_</code></td>
+<td><a href="media/rc_terminal_sarsa_standard_seed42.mp4"><img src="media/rc_terminal_sarsa_standard_seed42.gif" width="260"/></a></td>
+<td><a href="media/rc_terminal_ac_standard_seed42.mp4"><img src="media/rc_terminal_ac_standard_seed42.gif" width="260"/></a></td>
+</tr>
+<tr>
+<td><code>rc_lazy_</code></td>
+<td><a href="media/rc_lazy_sarsa_standard_seed42.mp4"><img src="media/rc_lazy_sarsa_standard_seed42.gif" width="260"/></a></td>
+<td><a href="media/rc_lazy_ac_standard_seed42.mp4"><img src="media/rc_lazy_ac_standard_seed42.gif" width="260"/></a></td>
+</tr>
+</table>
 
 ---
 
